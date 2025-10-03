@@ -1,0 +1,1777 @@
+openapi: 3.0.0
+info:
+  title: Billing System API
+  version: 1.0.0
+  description: |
+    API documentation for the Billing System application
+    
+servers:
+  - url: http://34.101.143.2:3000/api
+    description: Deploy Server
+  - url: https://sponge-quiet-brightly.ngrok-free.app/api
+    description: Tunnel Server
+  - url: http://localhost:3000/api
+    description: Local Development
+
+tags:
+  - name: User
+    description: Endpoint untuk manajemen user (admin, block, list, dll)
+  - name: Dashboard
+    description: Endpoint untuk dashboard admin dan user dengan data real-time
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+        token:
+          type: string
+        type:
+          type: string
+          enum: [admin, user]
+      required:
+        - email
+        - password
+    
+    Category:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        categoryName:
+          type: string
+        cost:
+          type: integer
+          description: Cost per unit time
+        periode:
+          type: integer
+          description: Periode in minutes 
+      required:
+        - categoryName
+        - cost
+        - periode
+    
+    Device:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Device ID yang terkoneksi ke WebSocket server
+        name:
+          type: string
+          description: Nama device
+        categoryId:
+          type: string
+          format: uuid
+          description: ID kategori device
+        timerStart:
+          type: string
+          format: date-time
+          description: Waktu mulai timer
+        timerDuration:
+          type: integer
+          description: Durasi timer dalam detik (seconds)
+        timerElapsed:
+          type: integer
+          description: Waktu yang sudah berlalu dalam detik (seconds)
+        timerStatus:
+          type: string
+          enum: [start, stop, end]
+          description: Status timer device
+        lastPausedAt:
+          type: string
+          format: date-time
+          description: Waktu terakhir timer di-pause
+        isConnected:
+          type: boolean
+          description: Status koneksi device ke WebSocket server
+        status:
+          type: string
+          enum: [on, off, pause, pause_disconnected]
+          description: Status real-time device (on=timer aktif, off=tidak ada timer, pause=di-pause manual, pause_disconnected=di-pause karena disconnect)
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - categoryId
+    
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        deviceId:
+          type: string
+          description: ID device yang digunakan
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+          nullable: true
+        duration:
+          type: integer
+          description: Durasi dalam detik (seconds)
+        cost:
+          type: integer
+          description: Biaya transaksi
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - deviceId
+        - duration
+        - cost
+    
+    WebSocketNotification:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [device_disconnect, device_connect, timer_paused_disconnect, timer_resumed, timer_auto_resumed, timer_started, timer_paused, timer_ended]
+          description: Tipe notifikasi
+        deviceId:
+          type: string
+          description: ID device yang terkait dengan notifikasi
+        timestamp:
+          type: string
+          format: date-time
+          description: Waktu notifikasi
+        reason:
+          type: string
+          description: Alasan disconnect (untuk device_disconnect)
+        elapsedTime:
+          type: integer
+          description: Waktu yang sudah berlalu dalam detik
+        canResume:
+          type: boolean
+          description: Apakah timer bisa di-resume
+        detail:
+          type: object
+          properties:
+            message:
+              type: string
+              description: Pesan detail notifikasi
+        transactionId:
+          type: string
+          format: uuid
+          description: ID transaksi yang terkait
+
+paths:
+  # AUTH ROUTES
+  /auth/login:
+    post:
+      summary: User login
+      tags: [Authentication]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+              required:
+                - email
+                - password
+              example:
+                email: admin@example.com
+                password: admin123
+      responses:
+        "200":
+          description: Login berhasil
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      user:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          email:
+                            type: string
+                          type:
+                            type: string
+                      accessToken:
+                        type: string
+                      refreshToken:
+                        type: string
+        "401":
+          description: Email atau password salah
+
+  /auth/refresh-token:
+    post:
+      summary: Refresh authentication token
+      tags: [Authentication]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken:
+                  type: string
+              required:
+                - refreshToken
+      responses:
+        "200":
+          description: Token refreshed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+        "401":
+          description: Invalid refresh token
+
+
+
+  # USER ROUTES
+  /user:
+    get:
+      summary: Get all users (Admin only)
+      tags: [User]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of users retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        email:
+                          type: string
+                          format: email
+                        type:
+                          type: string
+                          enum: [admin, user]
+                        isActive:
+                          type: boolean
+                        createdAt:
+                          type: string
+                          format: date-time
+                        updatedAt:
+                          type: string
+                          format: date-time
+        "401":
+          description: Unauthorized
+        "403":
+          description: Forbidden (Admin access required)
+    post:
+      summary: Create a new user (Admin only)
+      tags: [User]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                type:
+                  type: string
+                  enum: [admin, user]
+                  default: user
+              required:
+                - email
+                - password
+      responses:
+        "201":
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      email:
+                        type: string
+                        format: email
+                      type:
+                        type: string
+                        enum: [admin, user]
+                      isActive:
+                        type: boolean
+                      createdAt:
+                        type: string
+                        format: date-time
+                      updatedAt:
+                        type: string
+                        format: date-time
+        "400":
+          description: Bad request (email already exists or missing required fields)
+        "401":
+          description: Unauthorized
+        "403":
+          description: Forbidden (Admin access required)
+
+  /user/{userId}:
+    get:
+      summary: Get user by ID (Admin only)
+      tags: [User]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: User ID
+      responses:
+        "200":
+          description: User data retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      email:
+                        type: string
+                        format: email
+                      type:
+                        type: string
+                        enum: [admin, user]
+                      isActive:
+                        type: boolean
+                      createdAt:
+                        type: string
+                        format: date-time
+                      updatedAt:
+                        type: string
+                        format: date-time
+        "404":
+          description: User not found
+        "401":
+          description: Unauthorized
+        "403":
+          description: Forbidden (Admin access required)
+
+  /user/{userId}/block:
+    patch:
+      summary: Block/Unblock user (Admin only)
+      tags: [User]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: User ID
+      responses:
+        "200":
+          description: User blocked/unblocked successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      email:
+                        type: string
+                        format: email
+                      type:
+                        type: string
+                        enum: [admin, user]
+                      isActive:
+                        type: boolean
+        "404":
+          description: User not found
+        "401":
+          description: Unauthorized
+        "403":
+          description: Forbidden (Admin access required)
+
+  # CATEGORY ROUTES
+  /category/create:
+    post:
+      summary: Create a new category (Admin only)
+      tags: [Category]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Category"
+      responses:
+        "201":
+          description: Category created successfully
+        "403":
+          description: Forbidden (Admin access required)
+
+  /category:
+    get:
+      summary: Get all categories
+      tags: [Category]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of categories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Category"
+
+  /category/{id}:
+    get:
+      summary: Get category by ID
+      tags: [Category]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+          required: true
+          description: Category ID
+      responses:
+        "200":
+          description: Category data
+        "404":
+          description: Category not found
+
+  /category/update/{id}:
+    put:
+      summary: Update category by ID (Admin only)
+      tags: [Category]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+          required: true
+          description: Category ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Category"
+      responses:
+        "200":
+          description: Category updated successfully
+        "403":
+          description: Forbidden (Admin access required)
+        "404":
+          description: Category not found
+
+  /category/delete/{id}:
+    delete:
+      summary: Delete category by ID (Admin only)
+      tags: [Category]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+          required: true
+          description: Category ID
+      responses:
+        "200":
+          description: Category deleted successfully
+        "404":
+          description: Category not found
+
+  # DEVICE ROUTES
+  /device/create:
+    post:
+      summary: Create a new device
+      tags: [Device]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Device"
+      responses:
+        "201":
+          description: Device created successfully
+        "400":
+          description: Device belum terkoneksi ke server WebSocket
+
+  /device:
+    get:
+      summary: Get all devices
+      tags: [Device]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of devices with connection status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/Device"
+                        - type: object
+                          properties:
+                            isConnected:
+                              type: boolean
+                            status:
+                              type: string
+                              enum: [on, off, pause, pause_disconnected]
+
+  /device/{id}:
+    get:
+      summary: Get device by ID
+      tags: [Device]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+          required: true
+          description: Device ID
+      responses:
+        "200":
+          description: Device data
+        "404":
+          description: Device not found
+
+  /device/update/{id}:
+    put:
+      summary: Update device by ID
+      tags: [Device]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+          required: true
+          description: Device ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                categoryId:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Device updated successfully
+        "404":
+          description: Device not found
+
+  /device/delete/{id}:
+    delete:
+      summary: Delete device by ID
+      tags: [Device]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+          required: true
+          description: Device ID
+      responses:
+        "200":
+          description: Device deleted successfully
+        "404":
+          description: Device not found
+
+  /device/{id}/command:
+    post:
+      summary: Send command to device
+      tags: [Device]
+      description: Mengirim perintah start/stop/end ke device melalui WebSocket
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+          required: true
+          description: Device ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                command:
+                  type: string
+                  enum: [start, stop, end]
+                  description: Perintah yang akan dikirim ke device
+              required:
+                - command
+              example:
+                command: "start"
+      responses:
+        "200":
+          description: Perintah berhasil dikirim
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      command:
+                        type: object
+                      device:
+                        type: object
+        "400":
+          description: Bad Request
+        "404":
+          description: Device tidak ditemukan
+
+  /device/{deviceId}/add-time:
+    post:
+      summary: Add time to active transaction
+      tags: [Device]
+      description: |
+        Menambah waktu pada transaksi yang sedang aktif.
+        
+        **Validasi:**
+        - Transaksi harus ada dan belum selesai (end = null)
+        - Device harus memiliki timer yang aktif (timerStatus = 'start')
+        - Device tidak boleh memiliki timer yang di-pause di WebSocket
+        
+        **Jika device memiliki timer yang di-pause, resume timer terlebih dahulu menggunakan command start.**
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: deviceId
+          schema:
+            type: string
+          required: true
+          description: Device ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                additionalTime:
+                  type: integer
+                  description: Additional time in seconds
+              required:
+                - additionalTime
+              example:
+                additionalTime: 300
+      responses:
+        "200":
+          description: Berhasil menambah waktu ke transaksi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      transaction:
+                        $ref: "#/components/schemas/Transaction"
+                      device:
+                        type: object
+                      addedTime:
+                        type: integer
+        "400":
+          description: Device tidak memiliki timer yang aktif, timer di-pause, atau transaksi sudah selesai
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    examples:
+                      timer_not_active: "Device tidak memiliki timer yang aktif. Timer mungkin sudah selesai atau belum dimulai."
+                      timer_paused: "Device memiliki timer yang di-pause. Harap resume timer terlebih dahulu sebelum menambah waktu."
+                      transaction_ended: "Transaksi sudah selesai dan tidak bisa ditambah waktu"
+        "404":
+          description: Transaksi tidak ditemukan
+
+
+  # TRANSACTION ROUTES
+  /transaction/create:
+    post:
+      summary: Create a new transaction
+      tags: [Transaction]
+      description: |
+        Membuat transaksi baru dan mengirim timer ke device melalui WebSocket.
+        
+        **Validasi:**
+        - Device harus terkoneksi ke WebSocket
+        - Device tidak boleh memiliki timer yang aktif
+        - Device tidak boleh memiliki timer yang di-pause
+        - Device tidak boleh memiliki timer aktif di database
+        
+        **Jika device memiliki timer yang di-pause, gunakan command start untuk melanjutkan timer yang ada.**
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId:
+                  type: string
+                  description: ID device yang akan digunakan
+                start:
+                  type: string
+                  format: date-time
+                  description: Waktu mulai transaksi (opsional, default: waktu sekarang)
+                duration:
+                  type: integer
+                  description: Durasi dalam detik (seconds)
+              required:
+                - deviceId
+                - duration
+            example:
+              deviceId: "device_001"
+              start: "2024-01-15T10:30:00Z"
+              duration: 3600
+      responses:
+        "201":
+          description: Transaksi berhasil dibuat
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Transaksi berhasil dibuat"
+                  data:
+                    type: object
+                    properties:
+                      transaction:
+                        $ref: "#/components/schemas/Transaction"
+                      deviceCommand:
+                        type: object
+                        properties:
+                          type:
+                            type: string
+                            example: "command"
+                          deviceId:
+                            type: string
+                            example: "device_001"
+                          command:
+                            type: string
+                            example: "start"
+                          timer:
+                            type: integer
+                            example: 3600
+                          timestamp:
+                            type: string
+                            format: date-time
+              example:
+                message: "Transaksi berhasil dibuat"
+                data:
+                  transaction:
+                    id: "123e4567-e89b-12d3-a456-426614174000"
+                    deviceId: "device_001"
+                    userId: "user-123"
+                    start: "2024-01-15T10:30:00Z"
+                    end: null
+                    duration: 3600
+                    cost: 10000
+                    createdAt: "2024-01-15T10:30:00Z"
+                    updatedAt: "2024-01-15T10:30:00Z"
+                  deviceCommand:
+                    type: "command"
+                    deviceId: "device_001"
+                    command: "start"
+                    timer: 3600
+                    timestamp: "2024-01-15T10:30:00Z"
+        "400":
+          description: Data tidak valid, device tidak terkoneksi, atau device memiliki timer aktif/pause
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+              examples:
+                device_not_connected:
+                  summary: Device tidak terkoneksi
+                  value:
+                    message: "Device tidak terkoneksi ke server WebSocket"
+                timer_active:
+                  summary: Device memiliki timer aktif
+                  value:
+                    message: "Device masih memiliki timer yang aktif. Harap tunggu timer selesai atau gunakan command stop terlebih dahulu."
+                timer_paused:
+                  summary: Device memiliki timer yang di-pause
+                  value:
+                    message: "Device memiliki timer yang di-pause. Gunakan command start untuk melanjutkan timer yang ada, atau command end untuk mengakhiri timer."
+                invalid_input:
+                  summary: Input tidak valid
+                  value:
+                    message: "deviceId, dan duration wajib diisi"
+        "404":
+          description: Device tidak ditemukan
+
+  /transaction:
+    get:
+      summary: Get all transactions
+      tags: [Transaction]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: start_date
+          schema:
+            type: string
+            format: date
+          description: Filter by start date (YYYY-MM-DD)
+        - in: query
+          name: end_date
+          schema:
+            type: string
+            format: date
+          description: Filter by end date (YYYY-MM-DD)
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+          description: Page number for pagination
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 10
+          description: Number of items per page
+      responses:
+        "200":
+          description: List of transactions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Transaction"
+                  pagination:
+                    type: object
+                    properties:
+                      currentPage:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      totalItems:
+                        type: integer
+
+  /transaction/user/{userId}:
+    get:
+      summary: Get transactions by user ID
+      tags: [Transaction]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          schema:
+            type: string
+          required: true
+          description: User ID
+        - in: query
+          name: start_date
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: end_date
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: List of user transactions
+
+  /transaction/{id}:
+    get:
+      summary: Get transaction by ID
+      tags: [Transaction]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+          required: true
+          description: Transaction ID
+      responses:
+        "200":
+          description: Transaction data
+        "404":
+          description: Transaction not found
+
+    put:
+      summary: Update transaction
+      tags: [Transaction]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+          required: true
+          description: Transaction ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                start:
+                  type: string
+                  format: date-time
+                end:
+                  type: string
+                  format: date-time
+                duration:
+                  type: integer
+                cost:
+                  type: integer
+      responses:
+        "200":
+          description: Transaction updated successfully
+        "404":
+          description: Transaction not found
+
+    delete:
+      summary: Delete transaction
+      tags: [Transaction]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+          required: true
+          description: Transaction ID
+      responses:
+        "200":
+          description: Transaction deleted successfully
+        "404":
+          description: Transaction not found
+
+
+
+  # CONNECTION ROUTES
+  /connection/status:
+    get:
+      summary: Get connection status
+      tags: [Connection]
+      description: Mendapatkan status koneksi semua device yang terhubung ke WebSocket server
+      responses:
+        "200":
+          description: Connection status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totalClients:
+                    type: integer
+                  registeredDevices:
+                    type: integer
+                  devices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        deviceId:
+                          type: string
+                        status:
+                          type: string
+                          enum: [on, off, pause, pause_disconnected]
+
+  /connection/unregistered:
+    get:
+      summary: Get unregistered devices
+      tags: [Connection]
+      description: Mendapatkan daftar device yang terkoneksi ke WebSocket tapi belum terdaftar di database
+      responses:
+        "200":
+          description: List of unregistered devices
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        deviceId:
+                          type: string
+                        status:
+                          type: string
+
+  /connection/disconnected:
+    get:
+      summary: Get disconnected devices
+      tags: [Connection]
+      description: Mendapatkan daftar device yang terdaftar di database tapi tidak terkoneksi ke WebSocket
+      responses:
+        "200":
+          description: List of disconnected devices
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        categoryId:
+                          type: string
+                        lastSeen:
+                          type: string
+                          format: date-time
+
+  /connection/mobile/notifications:
+    get:
+      summary: Get mobile notifications (SSE)
+      tags: [Connection]
+      description: |
+        Endpoint untuk mendapatkan notifikasi real-time menggunakan Server-Sent Events (SSE).
+        Notifikasi dikirim ketika device disconnect atau timer berubah status.
+        Endpoint ini tidak membutuhkan autentikasi.
+      responses:
+        "200":
+          description: Koneksi SSE berhasil dibuka
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  data: {"type":"device_disconnect","deviceId":"abc123","timestamp":"2024-05-30T12:00:00Z","reason":"connection_lost"}
+                  
+                  data: {"type":"timer_paused_disconnect","deviceId":"abc123","elapsedTime":1800,"timestamp":"2024-05-30T12:00:00Z","canResume":true}
+                  
+                  data: {"type":"timer_resumed","deviceId":"abc123","timestamp":"2024-05-30T12:00:00Z","detail":{"message":"Timer resumed successfully"}}
+                  
+                  data: {"type":"timer_auto_resumed","deviceId":"abc123","timestamp":"2024-05-30T12:00:00Z","detail":{"message":"Timer auto resumed after reconnect"}}
+                  
+                  data: {"type":"device_connect","deviceId":"abc123","timestamp":"2024-05-30T12:00:00Z","detail":{"message":"Device connected"}}
+        "500":
+          description: Gagal membuka koneksi SSE
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  error:
+                    type: string
+
+
+
+  /connection/device/{deviceId}/timer-status:
+    get:
+      summary: Get detailed timer status for device
+      tags: [Connection]
+      description: |
+        Endpoint untuk debugging status timer device secara detail.
+        Menampilkan informasi lengkap tentang status timer, koneksi, dan kemampuan resume.
+      parameters:
+        - in: path
+          name: deviceId
+          schema:
+            type: string
+          required: true
+          description: Device ID yang akan dicek status timer-nya
+      responses:
+        "200":
+          description: Detail status timer device
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deviceId:
+                    type: string
+                    description: ID device yang dicek
+                  isConnected:
+                    type: boolean
+                    description: Apakah device terkoneksi ke WebSocket
+                  isTimerActive:
+                    type: boolean
+                    description: Apakah device memiliki timer yang sedang aktif
+                  isTimerPaused:
+                    type: boolean
+                    description: Apakah device memiliki timer yang di-pause
+                  canResume:
+                    type: boolean
+                    description: Apakah timer bisa di-resume
+                  deviceStatus:
+                    type: string
+                    enum: [on, off, pause, pause_disconnected]
+                    description: Status device (on=timer aktif, off=tidak ada timer, pause=di-pause manual, pause_disconnected=di-pause karena disconnect)
+                  databaseInfo:
+                    type: object
+                    properties:
+                      timerStatus:
+                        type: string
+                        enum: [start, stop, end]
+                        description: Status timer di database
+                      timerStart:
+                        type: string
+                        format: date-time
+                        description: Waktu mulai timer
+                      timerDuration:
+                        type: integer
+                        description: Durasi timer dalam milliseconds
+                      timerElapsed:
+                        type: integer
+                        description: Waktu yang sudah berlalu dalam milliseconds
+                      lastPausedAt:
+                        type: string
+                        format: date-time
+                        description: Waktu terakhir timer di-pause
+                  websocketInfo:
+                    type: object
+                    properties:
+                      inActiveTimers:
+                        type: boolean
+                        description: Apakah device ada di activeTimers set
+                      inPausedDevices:
+                        type: boolean
+                        description: Apakah device ada di pausedDevices set
+                      lastActivityTime:
+                        type: string
+                        format: date-time
+                        description: Waktu aktivitas terakhir device
+                  message:
+                    type: string
+                    description: Pesan penjelasan status
+              example:
+                deviceId: "abc123"
+                isConnected: true
+                isTimerActive: false
+                isTimerPaused: true
+                canResume: true
+                deviceStatus: "pause"
+                databaseInfo:
+                  timerStatus: "start"
+                  timerStart: "2024-05-30T10:00:00Z"
+                  timerDuration: 3600000
+                  timerElapsed: 1800000
+                  lastPausedAt: "2024-05-30T10:30:00Z"
+                websocketInfo:
+                  inActiveTimers: false
+                  inPausedDevices: true
+                  lastActivityTime: "2024-05-30T10:30:00Z"
+                message: "Device memiliki timer yang di-pause dan bisa di-resume"
+        "404":
+          description: Device tidak ditemukan
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Device tidak ditemukan"
+        "500":
+          description: Terjadi kesalahan saat mengecek status timer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  error:
+                    type: string
+
+  # DASHBOARD ROUTES
+  /dashboard:
+    get:
+      summary: Get user dashboard data
+      tags: [Dashboard]
+      description: |
+        Mendapatkan informasi dashboard untuk user biasa termasuk:
+        
+        **Summary:**
+        - Total perangkat aktif dan tidak aktif
+        
+        **Perangkat Aktif:**
+        - Daftar perangkat yang sedang berjalan
+        - Informasi timer, durasi, dan status
+        
+        **Riwayat Penggunaan:**
+        - Perangkat yang terakhir digunakan
+        - Data transaksi terakhir
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Dashboard data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  summary:
+                    type: object
+                    properties:
+                      total_active:
+                        type: integer
+                      total_inactive:
+                        type: integer
+                  active_devices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        device_id:
+                          type: string
+                        name:
+                          type: string
+                        category:
+                          type: string
+                        category_cost:
+                          type: integer
+                        periode:
+                          type: string
+                        status:
+                          type: string
+                        timer_start:
+                          type: string
+                          format: date-time
+                        timer_duration:
+                          type: integer
+                        timer_elapsed:
+                          type: integer
+                        timer_status:
+                          type: string
+                        last_paused_at:
+                          type: string
+                          format: date-time
+                  last_used_devices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        device_id:
+                          type: string
+                        name:
+                          type: string
+                        category:
+                          type: string
+                        category_cost:
+                          type: integer
+                        periode:
+                          type: string
+                        last_used:
+                          type: object
+                          properties:
+                            start:
+                              type: string
+                              format: date-time
+                            end:
+                              type: string
+                              format: date-time
+                            duration:
+                              type: integer
+                            cost:
+                              type: integer
+              example:
+                summary:
+                  total_active: 35
+                  total_inactive: 15
+                active_devices:
+                  - device_id: "device_001"
+                    name: "Device 1"
+                    category: "Kategori 1"
+                    category_cost: 10000
+                    periode: 60
+                    status: "on"
+                    timer_start: "2024-01-15T10:30:00Z"
+                    timer_duration: 3600
+                    timer_elapsed: 1800
+                    timer_status: "start"
+                    last_paused_at: null
+                last_used_devices:
+                  - device_id: "device_002"
+                    name: "Device 2"
+                    category: "Kategori 2"
+                    category_cost: 15000
+                    periode: 60
+                    last_used:
+                      start: "2024-01-15T09:00:00Z"
+                      end: "2024-01-15T09:30:00Z"
+                      duration: 1800
+                      cost: 15000
+        "401":
+          description: Unauthorized - Token tidak valid atau tidak ada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "No token provided"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Internal server error"
+
+  /dashboard/admin:
+    get:
+      summary: Get admin dashboard data
+      tags: [Dashboard]
+      description: |
+        Mendapatkan informasi dashboard admin yang komprehensif termasuk:
+        
+        **Profil Admin:**
+        - Nama, email, status online/offline, dan foto profil
+        
+        **Status Perangkat:**
+        - Perangkat sedang berjalan (aktif dengan timer)
+        - Perangkat siap digunakan (tidak aktif)
+        - Perangkat hampir selesai (sisa waktu ≤ 30 menit)
+        
+        **Total Pemasukan:**
+        - Data pemasukan dengan filter waktu (minggu/bulan/tahun)
+        - Chart data sesuai periode yang dipilih
+        - Daftar filter yang tersedia
+        
+        **Daftar Perangkat Sedang Berjalan:**
+        - 10 perangkat teratas yang sedang aktif
+        - Informasi nama, kategori, dan sisa waktu
+        
+        **User Terdaftar:**
+        - 6 user teratas dengan status online/offline
+        - Total jumlah user terdaftar
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: timeFilter
+          in: query
+          description: |
+            Filter waktu untuk total pemasukan dan chart data.
+            
+            **Opsi yang tersedia:**
+            - `week`: Minggu ini (Senin-Minggu) - Default
+            - `month`: Bulan ini (per minggu dalam bulan)
+            - `year`: Tahun ini (per bulan dalam tahun)
+          required: false
+          schema:
+            type: string
+            enum: [week, month, year]
+            default: week
+          example: "week"
+      responses:
+        "200":
+          description: Admin dashboard data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  admin_profile:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        example: "admin"
+                      email:
+                        type: string
+                        format: email
+                        example: "admin@example.com"
+                      status:
+                        type: string
+                        example: "Online"
+                      profile_picture:
+                        type: string
+                        format: uri
+                        nullable: true
+                        example: null
+                  device_status:
+                    type: object
+                    properties:
+                      running:
+                        type: object
+                        properties:
+                          text:
+                            type: string
+                            example: "Perangkat sedang berjalan"
+                          value:
+                            type: string
+                            example: "35/50"
+                      ready:
+                        type: object
+                        properties:
+                          text:
+                            type: string
+                            example: "Perangkat siap digunakan"
+                          value:
+                            type: string
+                            example: "15/50"
+                      almost_finished:
+                        type: object
+                        properties:
+                          text:
+                            type: string
+                            example: "Perangkat hampir selesai"
+                          value:
+                            type: string
+                            example: "5/35"
+                  total_income:
+                    type: object
+                    properties:
+                      title:
+                        type: string
+                        example: "Total pemasukan"
+                      timeframe:
+                        type: string
+                        example: "Minggu ini"
+                      total:
+                        type: integer
+                        example: 1280000
+                      chart_data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            day:
+                              type: string
+                              example: "Senin"
+                            income:
+                              type: integer
+                              example: 150000
+                      available_filters:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            value:
+                              type: string
+                              example: "week"
+                            label:
+                              type: string
+                              example: "Minggu ini"
+                  running_devices_list:
+                    type: object
+                    properties:
+                      title:
+                        type: string
+                        example: "Daftar Perangkat Sedang Berjalan"
+                      devices:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            no:
+                              type: integer
+                              example: 1
+                            nama_perangkat:
+                              type: string
+                              example: "Device 1"
+                            kategori:
+                              type: string
+                              example: "Kategori 1"
+                            sisa_waktu:
+                              type: string
+                              example: "90 menit"
+                      total_count:
+                        type: integer
+                        example: 35
+                  registered_users:
+                    type: object
+                    properties:
+                      title:
+                        type: string
+                        example: "User yang terdaftar"
+                      users:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            no:
+                              type: integer
+                              example: 1
+                            email:
+                              type: string
+                              format: email
+                              example: "admin@example.com"
+                            nama:
+                              type: string
+                              example: "admin"
+                            status:
+                              type: string
+                              example: "Online"
+                      total_count:
+                        type: integer
+                        example: 25
+              example:
+                admin_profile:
+                  name: "admin"
+                  email: "admin@example.com"
+                  status: "Online"
+                  profile_picture: null
+                device_status:
+                  running:
+                    text: "Perangkat sedang berjalan"
+                    value: "35/50"
+                  ready:
+                    text: "Perangkat siap digunakan"
+                    value: "15/50"
+                  almost_finished:
+                    text: "Perangkat hampir selesai"
+                    value: "5/35"
+                running_devices_list:
+                  title: "Daftar Perangkat Sedang Berjalan"
+                  devices:
+                    - no: 1
+                      nama_perangkat: "Device 1"
+                      kategori: "Kategori 1"
+                      sisa_waktu: "90 menit"
+                    - no: 2
+                      nama_perangkat: "Device 2"
+                      kategori: "Kategori 2"
+                      sisa_waktu: "45 menit"
+                  total_count: 35
+                total_income:
+                  title: "Total pemasukan"
+                  timeframe: "Minggu ini"
+                  total: 1280000
+                  chart_data:
+                    - day: "Senin"
+                      income: 150000
+                    - day: "Selasa"
+                      income: 200000
+                    - day: "Rabu"
+                      income: 180000
+                    - day: "Kamis"
+                      income: 250000
+                    - day: "Jumat"
+                      income: 300000
+                    - day: "Sabtu"
+                      income: 120000
+                    - day: "Minggu"
+                      income: 80000
+                  available_filters:
+                    - value: "week"
+                      label: "Minggu ini"
+                    - value: "month"
+                      label: "Bulan ini"
+                    - value: "year"
+                      label: "Tahun ini"
+                registered_users:
+                  title: "User yang terdaftar"
+                  users:
+                    - no: 1
+                      email: "admin@example.com"
+                      nama: "admin"
+                      status: "Online"
+                    - no: 2
+                      email: "user1@example.com"
+                      nama: "user1"
+                      status: "Offline"
+                  total_count: 25
+        "400":
+          description: Bad Request - Parameter tidak valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Invalid timeFilter parameter. Must be one of: week, month, year"
+        "401":
+          description: Unauthorized - Token tidak valid atau tidak ada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "No token provided"
+        "403":
+          description: Forbidden - User bukan admin
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Access forbidden. Admin rights required."
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Internal server error"
