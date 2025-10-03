@@ -35,6 +35,11 @@ module.exports = (sequelize, DataTypes) => {
     end: DataTypes.DATE,
     duration: DataTypes.INTEGER,
     cost: DataTypes.INTEGER,
+    isMemberTransaction: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false
+    },
     createdAt: DataTypes.DATE,
     updatedAt: DataTypes.DATE
   }, {

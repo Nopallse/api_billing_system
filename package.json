@@ -27,6 +27,7 @@
     "yamljs": "^0.3.0"
   },
   "devDependencies": {
+    "js-yaml": "^4.1.0",
     "sequelize-cli": "^6.6.3"
   }
 }

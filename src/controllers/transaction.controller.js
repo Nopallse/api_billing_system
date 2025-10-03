@@ -1,5 +1,5 @@
 // transactionController.js
-const { Transaction, Device, Category } = require('../models');
+const { Transaction, Device, Category, Member } = require('../models');
 const { sendToESP32, getConnectionStatus, onDeviceDisconnect, notifyMobileClients, sendAddTime } = require('../wsClient');
 const { v4: uuidv4 } = require('uuid');
 const { Op } = require('sequelize');
@@ -153,7 +153,8 @@ const createTransaction = async (req, res) => {
             start,
             end: null, // Transaksi aktif tidak boleh memiliki end timestamp
             duration,
-            cost: cost      
+            cost: cost,
+            isMemberTransaction: false
         });
 
         // Kirim data ke ESP32
@@ -251,6 +252,12 @@ const getAllTransactions = async (req, res) => {
                     include: [{
                         model: Category
                     }]
+                },
+                {
+                    model: Member,
+                    as: 'member',
+                    attributes: ['id', 'username', 'email', 'deposit'],
+                    required: false
                 }
             ],
             limit: parseInt(limit),
@@ -292,13 +299,21 @@ const getTransactionById = async (req, res) => {
        
         const transaction = await Transaction.findByPk(id,
             {
-                include: [{
-                    model: Device,
-                    include: [{
-                        model: Category,
-                        // as: 'category'  // Pastikan 'as' sesuai dengan alias yang didefinisikan di model
-                    }]
-                }],
+                include: [
+                    {
+                        model: Device,
+                        include: [{
+                            model: Category,
+                            // as: 'category'  // Pastikan 'as' sesuai dengan alias yang didefinisikan di model
+                        }]
+                    },
+                    {
+                        model: Member,
+                        as: 'member',
+                        attributes: ['id', 'username', 'email', 'deposit'],
+                        required: false
+                    }
+                ],
             }
         );
         

@@ -39,7 +39,7 @@ const login = async (req, res) => {
                 type: user.type // Tambahkan type user ke token
             }, 
             JWT_SECRET, 
-            { expiresIn: '1h' }
+            { expiresIn: '7d' }
         );
 
         const refreshToken = jwt.sign(

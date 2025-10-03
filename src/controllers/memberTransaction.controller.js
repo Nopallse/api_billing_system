@@ -169,7 +169,8 @@ const createMemberTransaction = async (req, res) => {
             start,
             end: null, // Transaksi aktif tidak boleh memiliki end timestamp
             duration,
-            cost: cost      
+            cost: cost,
+            isMemberTransaction: true
         });
 
         // Kurangi deposit member

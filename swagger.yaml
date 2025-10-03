@@ -14,8 +14,22 @@ servers:
     description: Local Development
 
 tags:
+  - name: Authentication
+    description: Endpoint untuk login dan refresh token
   - name: User
     description: Endpoint untuk manajemen user (admin, block, list, dll)
+  - name: Category
+    description: Endpoint untuk manajemen kategori device
+  - name: Device
+    description: Endpoint untuk manajemen device dan kontrol timer
+  - name: Transaction
+    description: Endpoint untuk manajemen transaksi umum
+  - name: Member
+    description: Endpoint untuk manajemen member
+  - name: Member Transaction
+    description: Endpoint untuk transaksi member dengan validasi PIN
+  - name: Connection
+    description: Endpoint untuk status koneksi WebSocket dan notifikasi
   - name: Dashboard
     description: Endpoint untuk dashboard admin dan user dengan data real-time
 
@@ -148,6 +162,34 @@ components:
         - deviceId
         - duration
         - cost
+    
+    Member:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+        pin:
+          type: string
+          description: Encrypted PIN for member authentication
+        deposit:
+          type: integer
+          description: Member deposit balance in rupiah
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - email
+        - username
+        - pin
     
     WebSocketNotification:
       type: object
@@ -841,7 +883,7 @@ paths:
                 start:
                   type: string
                   format: date-time
-                  description: Waktu mulai transaksi (opsional, default: waktu sekarang)
+                  description: "Waktu mulai transaksi (opsional, default: waktu sekarang)"
                 duration:
                   type: integer
                   description: Durasi dalam detik (seconds)
@@ -1340,6 +1382,666 @@ paths:
                     type: string
                   error:
                     type: string
+
+  # MEMBER ROUTES
+  /members:
+    get:
+      summary: Get all members
+      tags: [Member]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+          description: Page number for pagination
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 10
+          description: Number of items per page
+        - in: query
+          name: search
+          schema:
+            type: string
+          description: Search by email or username
+      responses:
+        "200":
+          description: Members retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      members:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Member"
+                      pagination:
+                        type: object
+                        properties:
+                          currentPage:
+                            type: integer
+                          totalPages:
+                            type: integer
+                          totalItems:
+                            type: integer
+                          itemsPerPage:
+                            type: integer
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
+    post:
+      summary: Create a new member
+      tags: [Member]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                username:
+                  type: string
+                pin:
+                  type: string
+                deposit:
+                  type: integer
+                  default: 0
+              required:
+                - email
+                - username
+                - pin
+      responses:
+        "201":
+          description: Member created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/Member"
+        "400":
+          description: Bad request
+        "409":
+          description: Email or username already exists
+        "500":
+          description: Internal server error
+
+  /members/{id}:
+    get:
+      summary: Get member by ID
+      tags: [Member]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Member ID
+      responses:
+        "200":
+          description: Member retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/Member"
+        "404":
+          description: Member not found
+        "500":
+          description: Internal server error
+    put:
+      summary: Update member
+      tags: [Member]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Member ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                username:
+                  type: string
+                pin:
+                  type: string
+                deposit:
+                  type: integer
+      responses:
+        "200":
+          description: Member updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/Member"
+        "404":
+          description: Member not found
+        "409":
+          description: Email or username already exists
+        "500":
+          description: Internal server error
+    delete:
+      summary: Delete member
+      tags: [Member]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Member ID
+      responses:
+        "200":
+          description: Member deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        "404":
+          description: Member not found
+        "409":
+          description: Cannot delete member with associated transactions
+        "500":
+          description: Internal server error
+
+  /members/{id}/topup:
+    post:
+      summary: Top up member deposit
+      tags: [Member]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Member ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: integer
+                  description: Top up amount in rupiah
+              required:
+                - amount
+      responses:
+        "200":
+          description: Deposit topped up successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      previousDeposit:
+                        type: integer
+                      topUpAmount:
+                        type: integer
+                      newDeposit:
+                        type: integer
+        "400":
+          description: Invalid amount
+        "404":
+          description: Member not found
+        "500":
+          description: Internal server error
+
+  /members/{id}/deduct:
+    post:
+      summary: Deduct from member deposit
+      tags: [Member]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Member ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: integer
+                  description: Deduction amount in rupiah
+              required:
+                - amount
+      responses:
+        "200":
+          description: Deposit deducted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      previousDeposit:
+                        type: integer
+                      deductedAmount:
+                        type: integer
+                      newDeposit:
+                        type: integer
+        "400":
+          description: Invalid amount or insufficient deposit
+        "404":
+          description: Member not found
+        "500":
+          description: Internal server error
+
+  # MEMBER TRANSACTION ROUTES
+  /member-transactions:
+    get:
+      summary: Get all member transactions
+      tags: [Member Transaction]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: start_date
+          schema:
+            type: string
+            format: date
+          description: Filter by start date (YYYY-MM-DD)
+        - in: query
+          name: end_date
+          schema:
+            type: string
+            format: date
+          description: Filter by end date (YYYY-MM-DD)
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+          description: Page number for pagination
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 10
+          description: Number of items per page
+        - in: query
+          name: memberId
+          schema:
+            type: string
+            format: uuid
+          description: Filter by member ID
+      responses:
+        "200":
+          description: Member transactions retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      transactions:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Transaction"
+                      pagination:
+                        type: object
+                        properties:
+                          totalItems:
+                            type: integer
+                          totalPages:
+                            type: integer
+                          currentPage:
+                            type: integer
+                          itemsPerPage:
+                            type: integer
+                          hasNextPage:
+                            type: boolean
+                          hasPrevPage:
+                            type: boolean
+        "400":
+          description: Invalid date format
+        "500":
+          description: Internal server error
+    post:
+      summary: Create a new member transaction
+      tags: [Member Transaction]
+      description: |
+        Create a member transaction with PIN validation.
+        This endpoint validates the member's PIN and creates a transaction
+        using the member's deposit balance.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId:
+                  type: string
+                  description: ID of the device to use
+                start:
+                  type: string
+                  format: date-time
+                  description: Transaction start time
+                duration:
+                  type: integer
+                  description: Duration in seconds
+                memberId:
+                  type: string
+                  format: uuid
+                  description: ID of the member
+                pin:
+                  type: string
+                  description: Member's PIN for authentication
+              required:
+                - deviceId
+                - start
+                - duration
+                - memberId
+                - pin
+      responses:
+        "201":
+          description: Member transaction created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      transaction:
+                        $ref: "#/components/schemas/Transaction"
+                      deviceCommand:
+                        type: object
+                      member:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          username:
+                            type: string
+                          email:
+                            type: string
+                          previousDeposit:
+                            type: integer
+                          newDeposit:
+                            type: integer
+                          deductedAmount:
+                            type: integer
+        "400":
+          description: Bad request - invalid input, device not connected, insufficient deposit, or device busy
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Member or device not found
+        "500":
+          description: Internal server error
+
+  /member-transactions/{id}:
+    get:
+      summary: Get member transaction by ID
+      tags: [Member Transaction]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Transaction ID
+      responses:
+        "200":
+          description: Member transaction retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/Transaction"
+        "404":
+          description: Transaction not found
+        "500":
+          description: Internal server error
+    put:
+      summary: Update member transaction
+      tags: [Member Transaction]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Transaction ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                start:
+                  type: string
+                  format: date-time
+                end:
+                  type: string
+                  format: date-time
+                duration:
+                  type: integer
+                cost:
+                  type: integer
+      responses:
+        "200":
+          description: Transaction updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/Transaction"
+        "404":
+          description: Transaction not found
+        "500":
+          description: Internal server error
+    delete:
+      summary: Delete member transaction
+      tags: [Member Transaction]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Transaction ID
+      responses:
+        "200":
+          description: Transaction deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "404":
+          description: Transaction not found
+        "500":
+          description: Internal server error
+
+  /member-transactions/member/{memberId}:
+    get:
+      summary: Get transactions by member ID
+      tags: [Member Transaction]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: memberId
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Member ID
+        - in: query
+          name: start_date
+          schema:
+            type: string
+            format: date
+          description: Filter by start date (YYYY-MM-DD)
+        - in: query
+          name: end_date
+          schema:
+            type: string
+            format: date
+          description: Filter by end date (YYYY-MM-DD)
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+          description: Page number for pagination
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 10
+          description: Number of items per page
+      responses:
+        "200":
+          description: Member transactions retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      transactions:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Transaction"
+                      pagination:
+                        type: object
+                        properties:
+                          totalItems:
+                            type: integer
+                          totalPages:
+                            type: integer
+                          currentPage:
+                            type: integer
+                          itemsPerPage:
+                            type: integer
+                          hasNextPage:
+                            type: boolean
+                          hasPrevPage:
+                            type: boolean
+        "400":
+          description: Invalid date format
+        "500":
+          description: Internal server error
 
   # DASHBOARD ROUTES
   /dashboard:

@@ -1,4 +1,4 @@
-const{ Device, User, Category, Transaction } = require('../models');
+const{ Device, User, Category, Transaction, Member } = require('../models');
 const { v4: uuidv4 } = require('uuid');
 const { getConnectionStatus, isTimerActive, sendCommand, sendAddTime, notifyMobileClients } = require('../wsClient');
 
@@ -78,12 +78,27 @@ const createDevice = async (req, res) => {
 
 const getAllDevices = async (req, res) => {
     try {
-        // Ambil semua device dari database
+        // Ambil semua device dari database dengan transaksi aktif terbaru
         const devices = await Device.findAll({
-            include: [{
-                model: Category,
-                as: 'Category'
-            }]
+            include: [
+                {
+                    model: Category,
+                    as: 'Category'
+                },
+                {
+                    model: Transaction,
+                    where: { end: null }, // Hanya transaksi yang masih aktif
+                    required: false,
+                    include: [{
+                        model: Member,
+                        as: 'member',
+                        attributes: ['id', 'username', 'email', 'deposit'],
+                        required: false
+                    }],
+                    order: [['createdAt', 'DESC']], // Ambil transaksi terbaru
+                    limit: 1 // Hanya ambil 1 transaksi terbaru
+                }
+            ]
         });
 
         // Ambil status koneksi
@@ -96,11 +111,24 @@ const getAllDevices = async (req, res) => {
         const devicesWithStatus = devices.map(device => {
             const deviceData = device.toJSON();
             const connectionInfo = connectedDevices.get(device.id);
+            const activeTransaction = deviceData.Transactions && deviceData.Transactions[0];
+            
+            // Tentukan apakah ini member transaction berdasarkan memberId atau flag
+            const isMemberTransaction = activeTransaction ? 
+                (activeTransaction.isMemberTransaction === true || activeTransaction.memberId !== null) : false;
             
             return {
                 ...deviceData,
                 isConnected: !!connectionInfo && connectionInfo.status !== 'pause_disconnected',
-                status: connectionInfo ? connectionInfo.status : 'off'
+                status: connectionInfo ? connectionInfo.status : 'off',
+                activeTransaction: activeTransaction ? {
+                    id: activeTransaction.id,
+                    start: activeTransaction.start,
+                    duration: activeTransaction.duration,
+                    cost: activeTransaction.cost,
+                    isMemberTransaction: isMemberTransaction,
+                    member: activeTransaction.member || null
+                } : null
             };
         });
 
@@ -125,6 +153,19 @@ const getDeviceById = async (req, res) => {
                 {
                     model: Category,
                     // as: 'category'
+                },
+                {
+                    model: Transaction,
+                    where: { end: null }, // Hanya transaksi yang masih aktif
+                    required: false,
+                    include: [{
+                        model: Member,
+                        as: 'member',
+                        attributes: ['id', 'username', 'email', 'deposit'],
+                        required: false
+                    }],
+                    order: [['createdAt', 'DESC']], // Ambil transaksi terbaru
+                    limit: 1 // Hanya ambil 1 transaksi terbaru
                 }
             ]
         });
@@ -140,10 +181,24 @@ const getDeviceById = async (req, res) => {
         const connectionInfo = connectedStatus.devices.find(d => d.deviceId === id);
 
         const deviceData = device.toJSON();
+        const activeTransaction = deviceData.Transactions && deviceData.Transactions[0];
+        
+        // Tentukan apakah ini member transaction berdasarkan memberId atau flag
+        const isMemberTransaction = activeTransaction ? 
+            (activeTransaction.isMemberTransaction === true || activeTransaction.memberId !== null) : false;
+        
         const response = {
             ...deviceData,
             isConnected: !!connectionInfo && connectionInfo.status !== 'pause_disconnected',
-            status: connectionInfo ? connectionInfo.status : 'off'
+            status: connectionInfo ? connectionInfo.status : 'off',
+            activeTransaction: activeTransaction ? {
+                id: activeTransaction.id,
+                start: activeTransaction.start,
+                duration: activeTransaction.duration,
+                cost: activeTransaction.cost,
+                isMemberTransaction: isMemberTransaction,
+                member: activeTransaction.member || null
+            } : null
         };
 
         return res.status(200).json({
@@ -370,13 +425,30 @@ const addTime = async (req, res) => {
         const newDeviceDuration = device.timerDuration + additionalTimeInSeconds;
         const newCost = device.Category.cost * (additionalTime/device.Category.periode);
 
+        // Cek apakah device ini memiliki transaksi member yang aktif
+        const activeTransaction = await Transaction.findOne({
+            where: {
+                deviceId: deviceId,
+                end: null // Transaksi yang masih aktif
+            },
+            include: [{
+                model: Member,
+                as: 'member',
+                required: false
+            }]
+        });
+
+        const isMemberTransaction = activeTransaction && activeTransaction.memberId !== null;
+
         // Update transaksi
         const transaction = await Transaction.create({
             deviceId: deviceId,
+            memberId: isMemberTransaction ? activeTransaction.memberId : null,
             start: device.timerStart,
             end: null, // Transaksi aktif tidak boleh memiliki end timestamp
             duration: newDeviceDuration,
-            cost: newCost      
+            cost: newCost,
+            isMemberTransaction: isMemberTransaction
         });
 
         // Update device timer duration
