@@ -117,11 +117,14 @@ const getAllDevices = async (req, res) => {
             const isMemberTransaction = activeTransaction ? 
                 (activeTransaction.isMemberTransaction === true || activeTransaction.memberId !== null) : false;
             
+            // Jika timerStatus adalah 'end', maka tidak ada transaksi aktif
+            const hasActiveTransaction = activeTransaction && device.timerStatus !== 'end';
+            
             return {
                 ...deviceData,
                 isConnected: !!connectionInfo && connectionInfo.status !== 'pause_disconnected',
                 status: connectionInfo ? connectionInfo.status : 'off',
-                activeTransaction: activeTransaction ? {
+                activeTransaction: hasActiveTransaction ? {
                     id: activeTransaction.id,
                     start: activeTransaction.start,
                     duration: activeTransaction.duration,
@@ -187,11 +190,14 @@ const getDeviceById = async (req, res) => {
         const isMemberTransaction = activeTransaction ? 
             (activeTransaction.isMemberTransaction === true || activeTransaction.memberId !== null) : false;
         
+        // Jika timerStatus adalah 'end', maka tidak ada transaksi aktif
+        const hasActiveTransaction = activeTransaction && device.timerStatus !== 'end';
+        
         const response = {
             ...deviceData,
             isConnected: !!connectionInfo && connectionInfo.status !== 'pause_disconnected',
             status: connectionInfo ? connectionInfo.status : 'off',
-            activeTransaction: activeTransaction ? {
+            activeTransaction: hasActiveTransaction ? {
                 id: activeTransaction.id,
                 start: activeTransaction.start,
                 duration: activeTransaction.duration,
