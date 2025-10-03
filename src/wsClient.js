@@ -231,7 +231,6 @@ const initWebSocketServer = (server) => {
                         }
                     }
                     connectedClients.set(deviceId, ws);
-                    console.log(`Device ${deviceId} registered`);
                     
                     // Cek apakah device memiliki timer yang di-pause
                     if (pausedDevices.has(deviceId)) {
