@@ -163,8 +163,6 @@ const initWebSocketServer = (server) => {
         ws.on('message', (message) => {
             try {
                 const data = JSON.parse(message);
-                console.log('Received from client:', data);
-                
                 // Semua penggunaan device_id diganti menjadi deviceId (camelCase)
                 const deviceId = data.deviceId;
                 

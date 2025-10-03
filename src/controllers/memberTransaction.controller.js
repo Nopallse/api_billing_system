@@ -74,6 +74,7 @@ const createMemberTransaction = async (req, res) => {
     try {
         const { deviceId, start, duration, memberId, pin } = req.body;
         
+        console.log('Creating member transaction with data:', { deviceId, start, duration, memberId, pin: pin ? '***' : null });
         // Validasi input
         if (!deviceId || !duration || !start || !memberId || !pin) {
             return res.status(400).json({
