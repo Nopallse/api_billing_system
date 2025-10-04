@@ -310,36 +310,80 @@ const getTransactionById = async (req, res) => {
     const { id } = req.params;
     
     try {
-       
-        const transaction = await Transaction.findByPk(id,
-            {
-                include: [
-                    {
-                        model: Device,
-                        include: [{
-                            model: Category,
-                            // as: 'category'  // Pastikan 'as' sesuai dengan alias yang didefinisikan di model
-                        }]
-                    },
-                    {
-                        model: Member,
-                        as: 'member',
-                        attributes: ['id', 'username', 'email', 'deposit'],
-                        required: false
-                    }
-                ],
-            }
-        );
+        const transaction = await Transaction.findByPk(id, {
+            include: [
+                {
+                    model: Device,
+                    include: [{
+                        model: Category,
+                    }]
+                },
+                {
+                    model: Member,
+                    as: 'member',
+                    attributes: ['id', 'username', 'email', 'deposit'],
+                    required: false
+                }
+            ],
+        });
         
         if (!transaction) {
             return res.status(404).json({
                 message: 'Transaction not found'
             });
         }
+
+        // Format data untuk receipt
+        const transactionData = transaction.toJSON();
+        
+        // Hitung informasi receipt
+        let receiptInfo = null;
+        if (transactionData.Device && transactionData.Device.Category) {
+            const category = transactionData.Device.Category;
+            const durationSeconds = transactionData.duration;
+            const durationMinutes = Math.ceil(durationSeconds / 60);
+            
+            // Parse start time untuk mendapatkan tanggal dan waktu mulai
+            let startDateTime = null;
+            let endDateTime = null;
+            
+            if (transactionData.createdAt) {
+                startDateTime = new Date(transactionData.createdAt);
+                
+                // Hitung end time berdasarkan start + duration
+                if (transactionData.end) {
+                    // Jika ada end time, gunakan created date dengan end time
+                    const endTimeParts = transactionData.end.split(':');
+                    endDateTime = new Date(startDateTime);
+                    endDateTime.setHours(parseInt(endTimeParts[0]), parseInt(endTimeParts[1]), parseInt(endTimeParts[2] || 0));
+                } else {
+                    // Jika tidak ada end time, hitung dari start + duration
+                    endDateTime = new Date(startDateTime.getTime() + (durationSeconds * 1000));
+                }
+            }
+
+            receiptInfo = {
+                deviceName: transactionData.Device.name,
+                categoryName: category.categoryName,
+                startTime: startDateTime?.toISOString(),
+                endTime: endDateTime?.toISOString(),
+                durationSeconds: durationSeconds,
+                durationMinutes: durationMinutes,
+                costPerPeriod: category.cost,
+                periodMinutes: category.periode,
+                totalCost: transactionData.cost,
+                isMemberTransaction: transactionData.isMemberTransaction || false,
+                member: transactionData.member || null,
+                transactionStatus: transactionData.end ? 'completed' : 'active'
+            };
+        }
         
         return res.status(200).json({
             message: 'Success',
-            data: transaction
+            data: {
+                ...transactionData,
+                receipt: receiptInfo
+            }
         });
     } catch (error) {
         console.error('Error getting transaction:', error);
