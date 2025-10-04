@@ -133,18 +133,28 @@ const logAddTime = async (transactionId, durationAdded, costAdded, paymentMethod
 /**
  * Log aktivitas end transaksi
  */
-const logTransactionEnd = async (transactionId, totalDuration, totalCost, reason = 'Timer completed') => {
+const logTransactionEnd = async (transactionId, totalDuration, totalCost, reason = 'Timer completed', refundInfo = null) => {
     const totalMinutes = Math.ceil(totalDuration / 60);
-    const description = `Transaksi selesai: ${reason}. Total durasi ${totalMinutes} menit (${totalDuration} detik), total biaya ${totalCost}`;
+    let description = `Transaksi selesai: ${reason}. Total durasi ${totalMinutes} menit (${totalDuration} detik), total biaya ${totalCost}`;
+    
+    if (refundInfo) {
+        description += `. Refund: Rp${refundInfo.refundAmount} dari ${refundInfo.remainingSeconds} detik tidak terpakai`;
+    }
+    
+    const metadata = {
+        reason,
+        totalDuration,
+        totalCost
+    };
+
+    if (refundInfo) {
+        metadata.refundInfo = refundInfo;
+    }
     
     return await logTransactionActivity(transactionId, 'end', {
         description,
         deviceStatus: 'completed',
-        metadata: {
-            reason,
-            totalDuration,
-            totalCost
-        }
+        metadata
     });
 };
 

@@ -683,7 +683,9 @@ const addTimeToMemberTransaction = async (req, res) => {
         // Kirim command ke ESP32 untuk menambah waktu
         const result = sendAddTime({
             deviceId: transaction.deviceId,
-            additionalTime: additionalDurationSeconds
+            additionalTime: additionalDurationSeconds,
+            useDeposit: paymentMethod === 'deposit',
+            transactionId: transaction.id
         });
 
         if (!result.success) {

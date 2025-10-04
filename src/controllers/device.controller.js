@@ -1,6 +1,12 @@
 const{ Device, User, Category, Transaction, Member } = require('../models');
 const { v4: uuidv4 } = require('uuid');
 const { getConnectionStatus, isTimerActive, sendCommand, sendAddTime, notifyMobileClients } = require('../wsClient');
+const { 
+    logAddTime, 
+    logTransactionStop, 
+    logTransactionResume, 
+    logTransactionEnd 
+} = require('../utils/transactionActivityLogger');
 
 // Fungsi untuk mengecek dan mengakhiri transaksi yang expired
 const checkAndEndExpiredTransactions = async () => {
@@ -482,6 +488,19 @@ const sendDeviceCommand = async (req, res) => {
                     timerElapsed: elapsedTime,
                     lastPausedAt: now
                 });
+
+                // Cari transaksi aktif untuk logging
+                const activeTransaction = await Transaction.findOne({
+                    where: { 
+                        deviceId: id, 
+                        end: null 
+                    },
+                    order: [['createdAt', 'DESC']]
+                });
+
+                if (activeTransaction) {
+                    await logTransactionStop(activeTransaction.id, elapsedTime, 'manual_stop');
+                }
             }
         } else if (command === 'end') {
             // Cari transaksi aktif untuk device ini
@@ -579,6 +598,25 @@ const sendDeviceCommand = async (req, res) => {
                 lastPausedAt: null,
                 timerDuration: 0
             });
+
+            // Log aktivitas END transaksi jika ada transaksi aktif
+            if (activeTransaction) {
+                const finalCost = activeTransaction.cost - (refundInfo?.refundAmount || 0);
+                let usedTime = 0;
+                if (device.timerStart && device.timerStatus === 'start') {
+                    usedTime = Math.floor((now - device.timerStart) / 1000);
+                } else if (device.timerElapsed) {
+                    usedTime = device.timerElapsed;
+                }
+
+                await logTransactionEnd(
+                    activeTransaction.id, 
+                    usedTime, 
+                    finalCost, 
+                    'manual_end',
+                    refundInfo
+                );
+            }
             
             // Notify mobile clients tentang refund jika ada
             if (refundInfo) {
@@ -638,9 +676,9 @@ const sendDeviceCommand = async (req, res) => {
 
 const addTime = async (req, res) => {
     const { deviceId } = req.params;
-    const { additionalTime } = req.body; // minutes to add (existing behavior)
+    const { additionalTime, useDeposit = true } = req.body; // minutes to add, useDeposit default true untuk backward compatibility
 
-    console.log('Add time request:', { deviceId, additionalTime });
+    console.log('Add time request:', { deviceId, additionalTime, useDeposit });
 
     try {
         if (!additionalTime || typeof additionalTime !== 'number' || additionalTime <= 0) {
@@ -697,7 +735,7 @@ const addTime = async (req, res) => {
         let previousDeposit = null;
         let newDeposit = null;
         let memberData = null;
-        if (activeTransaction.memberId) {
+        if (activeTransaction.memberId && useDeposit) {
             const member = await Member.findByPk(activeTransaction.memberId);
             if (!member) {
                 return res.status(400).json({ message: 'Member untuk transaksi ini tidak ditemukan' });
@@ -717,6 +755,12 @@ const addTime = async (req, res) => {
             // Kurangi deposit terlebih dahulu (akan di-rollback jika sendAddTime gagal)
             await member.update({ deposit: newDeposit });
             memberData = { id: member.id, username: member.username, email: member.email, previousDeposit, newDeposit, deductedAdditional: incrementalCost };
+        } else if (activeTransaction.memberId && !useDeposit) {
+            // Jika transaksi member tapi tidak menggunakan deposit, hanya ambil info member
+            const member = await Member.findByPk(activeTransaction.memberId);
+            if (member) {
+                memberData = { id: member.id, username: member.username, email: member.email, deposit: member.deposit };
+            }
         }
 
         // Update transaksi (durasi & total biaya)
@@ -731,7 +775,9 @@ const addTime = async (req, res) => {
         // Kirim perintah add time ke device (detik)
         const result = await sendAddTime({
             deviceId: device.id,
-            additionalTime: additionalSeconds
+            additionalTime: additionalSeconds,
+            useDeposit: useDeposit,
+            transactionId: activeTransaction.id
         });
 
         if (!result.success) {
@@ -741,7 +787,7 @@ const addTime = async (req, res) => {
                 cost: activeTransaction.cost - incrementalCost
             });
             await device.update({ timerDuration: device.timerDuration - additionalSeconds });
-            if (activeTransaction.memberId && previousDeposit !== null) {
+            if (activeTransaction.memberId && useDeposit && previousDeposit !== null) {
                 const member = await Member.findByPk(activeTransaction.memberId);
                 if (member) await member.update({ deposit: previousDeposit });
             }
@@ -758,6 +804,21 @@ const addTime = async (req, res) => {
             incrementalCost: incrementalCost,
             timestamp: new Date().toISOString()
         });
+
+        // Log aktivitas penambahan waktu
+        const paymentMethod = (activeTransaction.memberId && useDeposit) ? 'deposit' : 'cash';
+        const memberBalanceInfo = (activeTransaction.memberId && useDeposit && previousDeposit !== null) ? {
+            previousBalance: previousDeposit,
+            newBalance: previousDeposit - incrementalCost
+        } : null;
+
+        await logAddTime(
+            activeTransaction.id, 
+            additionalSeconds, 
+            incrementalCost, 
+            paymentMethod, 
+            memberBalanceInfo
+        );
 
         return res.status(200).json({
             message: `Berhasil menambah waktu ${additionalTime} menit ke device`,

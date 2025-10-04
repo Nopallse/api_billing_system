@@ -671,7 +671,7 @@ const sendAddTime = (data) => {
     }
     
     const deviceId = data.deviceId;
-    const { additionalTime } = data;
+    const { additionalTime, useDeposit = false, transactionId = null } = data;
     
     // Validasi input
     if (!deviceId) {
@@ -721,6 +721,8 @@ const sendAddTime = (data) => {
             type: 'add_time',
             deviceId: deviceId,
             additionalTime: additionalTime,
+            useDeposit: useDeposit,
+            transactionId: transactionId,
             timestamp: new Date().toISOString()
         };
 
