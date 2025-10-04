@@ -546,10 +546,8 @@ const sendDeviceCommand = async (req, res) => {
                 }
                 
                 // Update transaksi dengan waktu selesai
-                const endTime = new Date().toLocaleTimeString('en-GB', { 
-                    hour12: false, 
-                    timeZone: 'Asia/Jakarta' 
-                });
+                // Gunakan format HH:MM:SS yang kompatibel dengan MySQL TIME column
+                const endTime = new Date().toTimeString().split(' ')[0]; // Format: "HH:MM:SS"
                 
                 const finalCost = activeTransaction.cost - (refundInfo?.refundAmount || 0);
                 
