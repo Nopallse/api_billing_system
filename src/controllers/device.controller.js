@@ -546,7 +546,7 @@ const sendDeviceCommand = async (req, res) => {
                 }
                 
                 // Update transaksi dengan waktu selesai
-                const endTime = new Date().toLocaleTimeString('id-ID', { 
+                const endTime = new Date().toLocaleTimeString('en-GB', { 
                     hour12: false, 
                     timeZone: 'Asia/Jakarta' 
                 });
