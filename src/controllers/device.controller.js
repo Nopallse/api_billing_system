@@ -2,6 +2,78 @@ const{ Device, User, Category, Transaction, Member } = require('../models');
 const { v4: uuidv4 } = require('uuid');
 const { getConnectionStatus, isTimerActive, sendCommand, sendAddTime, notifyMobileClients } = require('../wsClient');
 
+// Fungsi untuk mengecek dan mengakhiri transaksi yang expired
+const checkAndEndExpiredTransactions = async () => {
+    try {
+        const now = new Date();
+        
+        // Cari semua device dengan timer aktif
+        const activeDevices = await Device.findAll({
+            where: {
+                timerStatus: 'start',
+                timerStart: { [require('sequelize').Op.not]: null },
+                timerDuration: { [require('sequelize').Op.not]: null }
+            },
+            include: [{
+                model: Transaction,
+                where: { end: null },
+                required: false
+            }]
+        });
+
+        for (const device of activeDevices) {
+            const startTime = new Date(device.timerStart);
+            const elapsedSeconds = Math.floor((now - startTime) / 1000);
+            
+            if (elapsedSeconds >= device.timerDuration) {
+                console.log(`⏰ Timer expired for device ${device.id}, ending transaction...`);
+                
+                // Update device status
+                await device.update({
+                    timerStatus: 'end',
+                    timerElapsed: device.timerDuration
+                });
+                
+                // End active transaction if exists
+                const activeTransaction = device.Transactions && device.Transactions[0];
+                if (activeTransaction) {
+                    const endTime = new Date(startTime.getTime() + (device.timerDuration * 1000));
+                    await activeTransaction.update({
+                        end: endTime.toTimeString().split(' ')[0] // Format HH:MM:SS
+                    });
+                    
+                    console.log(`✅ Transaction ${activeTransaction.id} ended automatically`);
+                    
+                    // Notify mobile clients
+                    notifyMobileClients({
+                        type: 'transaction_auto_ended',
+                        transactionId: activeTransaction.id,
+                        deviceId: device.id,
+                        reason: 'timer_expired',
+                        timestamp: now.toISOString()
+                    });
+                }
+                
+                // Send off command to device if connected
+                try {
+                    await sendCommand({
+                        deviceId: device.id,
+                        command: 'off'
+                    });
+                    console.log(`📱 Sent OFF command to device ${device.id}`);
+                } catch (error) {
+                    console.log(`⚠️ Could not send OFF command to device ${device.id}:`, error.message);
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error checking expired transactions:', error);
+    }
+};
+
+// Jalankan pengecekan setiap 30 detik
+setInterval(checkAndEndExpiredTransactions, 30000);
+
 //create device
 const createDevice = async (req, res) => {
     const {name, categoryId, id} = req.body;
@@ -117,13 +189,34 @@ const getAllDevices = async (req, res) => {
             const isMemberTransaction = activeTransaction ? 
                 (activeTransaction.isMemberTransaction === true || activeTransaction.memberId !== null) : false;
             
-            // Jika timerStatus adalah 'end', maka tidak ada transaksi aktif
-            const hasActiveTransaction = activeTransaction && device.timerStatus !== 'end';
+            // Periksa apakah timer sudah expired
+            let isTimerExpired = false;
+            if (device.timerStart && device.timerDuration && device.timerStatus === 'start') {
+                const now = new Date();
+                const startTime = new Date(device.timerStart);
+                const elapsedSeconds = Math.floor((now - startTime) / 1000);
+                isTimerExpired = elapsedSeconds >= device.timerDuration;
+                
+                console.log(`Device ${device.id}: elapsed=${elapsedSeconds}, duration=${device.timerDuration}, expired=${isTimerExpired}`);
+            }
+            
+            // Jika timerStatus adalah 'end' atau timer expired, maka tidak ada transaksi aktif
+            const hasActiveTransaction = activeTransaction && device.timerStatus !== 'end' && !isTimerExpired;
+            
+            // Tentukan status device
+            let deviceStatus = 'off';
+            if (connectionInfo) {
+                if (isTimerExpired && device.timerStatus === 'start') {
+                    deviceStatus = 'off'; // Timer habis, paksa status ke off
+                } else {
+                    deviceStatus = connectionInfo.status;
+                }
+            }
             
             return {
                 ...deviceData,
                 isConnected: !!connectionInfo && connectionInfo.status !== 'pause_disconnected',
-                status: connectionInfo ? connectionInfo.status : 'off',
+                status: deviceStatus,
                 activeTransaction: hasActiveTransaction ? {
                     id: activeTransaction.id,
                     start: activeTransaction.start,
@@ -190,13 +283,34 @@ const getDeviceById = async (req, res) => {
         const isMemberTransaction = activeTransaction ? 
             (activeTransaction.isMemberTransaction === true || activeTransaction.memberId !== null) : false;
         
-        // Jika timerStatus adalah 'end', maka tidak ada transaksi aktif
-        const hasActiveTransaction = activeTransaction && device.timerStatus !== 'end';
+        // Periksa apakah timer sudah expired
+        let isTimerExpired = false;
+        if (device.timerStart && device.timerDuration && device.timerStatus === 'start') {
+            const now = new Date();
+            const startTime = new Date(device.timerStart);
+            const elapsedSeconds = Math.floor((now - startTime) / 1000);
+            isTimerExpired = elapsedSeconds >= device.timerDuration;
+            
+            console.log(`Device ${device.id} detail: elapsed=${elapsedSeconds}, duration=${device.timerDuration}, expired=${isTimerExpired}`);
+        }
+        
+        // Jika timerStatus adalah 'end' atau timer expired, maka tidak ada transaksi aktif
+        const hasActiveTransaction = activeTransaction && device.timerStatus !== 'end' && !isTimerExpired;
+        
+        // Tentukan status device
+        let deviceStatus = 'off';
+        if (connectionInfo) {
+            if (isTimerExpired && device.timerStatus === 'start') {
+                deviceStatus = 'off'; // Timer habis, paksa status ke off
+            } else {
+                deviceStatus = connectionInfo.status;
+            }
+        }
         
         const response = {
             ...deviceData,
             isConnected: !!connectionInfo && connectionInfo.status !== 'pause_disconnected',
-            status: connectionInfo ? connectionInfo.status : 'off',
+            status: deviceStatus,
             activeTransaction: hasActiveTransaction ? {
                 id: activeTransaction.id,
                 start: activeTransaction.start,
