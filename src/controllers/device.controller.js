@@ -28,18 +28,33 @@ const checkAndEndExpiredTransactions = async () => {
             if (elapsedSeconds >= device.timerDuration) {
                 console.log(`⏰ Timer expired for device ${device.id}, ending transaction...`);
                 
-                // Update device status
-                await device.update({
-                    timerStatus: 'end',
-                    timerElapsed: device.timerDuration
-                });
-                
                 // End active transaction if exists
                 const activeTransaction = device.Transactions && device.Transactions[0];
                 if (activeTransaction) {
+                    let refundInfo = null;
+                    
+                    // Jika ini adalah member transaction, tidak perlu refund karena waktu sudah habis
+                    // Tapi kita tetap perlu update member info untuk logging
+                    if (activeTransaction.isMemberTransaction && activeTransaction.memberId) {
+                        const member = await Member.findByPk(activeTransaction.memberId);
+                        if (member) {
+                            refundInfo = {
+                                memberId: member.id,
+                                memberName: member.username,
+                                originalDuration: activeTransaction.duration,
+                                usedTime: device.timerDuration, // Full time used
+                                remainingTime: 0, // No remaining time
+                                refundAmount: 0, // No refund for expired timer
+                                message: 'Timer expired - no refund'
+                            };
+                            console.log(`⏰ Member ${member.username} used full time - no refund needed`);
+                        }
+                    }
+                    
                     const endTime = new Date(startTime.getTime() + (device.timerDuration * 1000));
                     await activeTransaction.update({
-                        end: endTime.toTimeString().split(' ')[0] // Format HH:MM:SS
+                        end: endTime.toTimeString().split(' ')[0], // Format HH:MM:SS
+                        duration: device.timerDuration // Pastikan duration sesuai waktu yang digunakan
                     });
                     
                     console.log(`✅ Transaction ${activeTransaction.id} ended automatically`);
@@ -50,9 +65,16 @@ const checkAndEndExpiredTransactions = async () => {
                         transactionId: activeTransaction.id,
                         deviceId: device.id,
                         reason: 'timer_expired',
+                        refundInfo: refundInfo,
                         timestamp: now.toISOString()
                     });
                 }
+                
+                // Update device status
+                await device.update({
+                    timerStatus: 'end',
+                    timerElapsed: device.timerDuration
+                });
                 
                 // Send off command to device if connected
                 try {
@@ -179,11 +201,23 @@ const getAllDevices = async (req, res) => {
             connectedStatus.devices.map(device => [device.deviceId, device])
         );
 
+        const now = new Date();
+
         // Gabungkan data database dengan status koneksi
-        const devicesWithStatus = devices.map(device => {
+        const devicesWithStatus = await Promise.all(devices.map(async (device) => {
             const deviceData = device.toJSON();
             const connectionInfo = connectedDevices.get(device.id);
             const activeTransaction = deviceData.Transactions && deviceData.Transactions[0];
+            
+            // Update timerElapsed jika timer sedang berjalan
+            if (device.timerStart && device.timerStatus === 'start') {
+                const startTime = new Date(device.timerStart);
+                const elapsedSeconds = Math.floor((now - startTime) / 1000);
+                
+                // Update timerElapsed di database untuk real-time tracking
+                await device.update({ timerElapsed: elapsedSeconds });
+                deviceData.timerElapsed = elapsedSeconds;
+            }
             
             // Tentukan apakah ini member transaction berdasarkan memberId atau flag
             const isMemberTransaction = activeTransaction ? 
@@ -192,7 +226,6 @@ const getAllDevices = async (req, res) => {
             // Periksa apakah timer sudah expired
             let isTimerExpired = false;
             if (device.timerStart && device.timerDuration && device.timerStatus === 'start') {
-                const now = new Date();
                 const startTime = new Date(device.timerStart);
                 const elapsedSeconds = Math.floor((now - startTime) / 1000);
                 isTimerExpired = elapsedSeconds >= device.timerDuration;
@@ -226,7 +259,7 @@ const getAllDevices = async (req, res) => {
                     member: activeTransaction.member || null
                 } : null
             };
-        });
+        }));
 
         return res.status(200).json({
             message: 'Berhasil mendapatkan daftar device',
@@ -272,6 +305,17 @@ const getDeviceById = async (req, res) => {
             });
         }
 
+        const now = new Date();
+
+        // Update timerElapsed jika timer sedang berjalan
+        if (device.timerStart && device.timerStatus === 'start') {
+            const startTime = new Date(device.timerStart);
+            const elapsedSeconds = Math.floor((now - startTime) / 1000);
+            
+            // Update timerElapsed di database untuk real-time tracking
+            await device.update({ timerElapsed: elapsedSeconds });
+        }
+
         // Ambil status koneksi
         const connectedStatus = getConnectionStatus();
         const connectionInfo = connectedStatus.devices.find(d => d.deviceId === id);
@@ -286,7 +330,6 @@ const getDeviceById = async (req, res) => {
         // Periksa apakah timer sudah expired
         let isTimerExpired = false;
         if (device.timerStart && device.timerDuration && device.timerStatus === 'start') {
-            const now = new Date();
             const startTime = new Date(device.timerStart);
             const elapsedSeconds = Math.floor((now - startTime) / 1000);
             isTimerExpired = elapsedSeconds >= device.timerDuration;
@@ -398,6 +441,7 @@ const sendDeviceCommand = async (req, res) => {
         }
 
         const now = new Date();
+        let refundInfo = null; // Deklarasi variabel untuk menyimpan informasi refund
 
         // Handle timer status berdasarkan command
         if (command === 'start') {
@@ -440,6 +484,84 @@ const sendDeviceCommand = async (req, res) => {
                 });
             }
         } else if (command === 'end') {
+            // Cari transaksi aktif untuk device ini
+            const activeTransaction = await Transaction.findOne({
+                where: { 
+                    deviceId: id, 
+                    end: null 
+                },
+                include: [{
+                    model: Member,
+                    as: 'member',
+                    required: false
+                }],
+                order: [['createdAt', 'DESC']]
+            });
+            
+            // Jika ada transaksi aktif dan ini adalah member transaction
+            if (activeTransaction && activeTransaction.isMemberTransaction && activeTransaction.member) {
+                const member = activeTransaction.member;
+                const originalDuration = activeTransaction.duration; // dalam detik
+                
+                // Hitung waktu yang sudah digunakan
+                let usedTime = 0;
+                if (device.timerStart && device.timerStatus === 'start') {
+                    usedTime = Math.floor((now - device.timerStart) / 1000);
+                } else if (device.timerElapsed) {
+                    usedTime = device.timerElapsed;
+                }
+                
+                const remainingTime = Math.max(0, originalDuration - usedTime);
+                
+                console.log(`Member transaction end - Original: ${originalDuration}s, Used: ${usedTime}s, Remaining: ${remainingTime}s`);
+                
+                if (remainingTime > 0) {
+                    // Hitung biaya untuk waktu yang tidak terpakai
+                    const category = await Category.findByPk(device.categoryId);
+                    if (category) {
+                        const { calculateCost } = require('../utils/cost');
+                        const refundAmount = calculateCost(remainingTime, category);
+                        
+                        if (refundAmount > 0) {
+                            // Kembalikan deposit
+                            const currentDeposit = Number(member.deposit);
+                            const newDeposit = currentDeposit + refundAmount;
+                            
+                            await member.update({ deposit: newDeposit });
+                            
+                            refundInfo = {
+                                memberId: member.id,
+                                memberName: member.username,
+                                originalDuration: originalDuration,
+                                usedTime: usedTime,
+                                remainingTime: remainingTime,
+                                refundAmount: refundAmount,
+                                previousDeposit: currentDeposit,
+                                newDeposit: newDeposit
+                            };
+                            
+                            console.log(`✅ Refund processed for member ${member.username}: Rp${refundAmount} from ${remainingTime} seconds remaining`);
+                        }
+                    }
+                }
+                
+                // Update transaksi dengan waktu selesai
+                const endTime = new Date().toLocaleTimeString('id-ID', { 
+                    hour12: false, 
+                    timeZone: 'Asia/Jakarta' 
+                });
+                
+                const finalCost = activeTransaction.cost - (refundInfo?.refundAmount || 0);
+                
+                await activeTransaction.update({
+                    end: endTime,
+                    duration: usedTime, // Update duration ke waktu yang benar-benar digunakan
+                    cost: finalCost // Kurangi biaya sesuai refund
+                });
+                
+                console.log(`Transaction updated - Final cost: Rp${finalCost}, Duration: ${usedTime}s`);
+            }
+            
             // Reset semua status timer
             await device.update({
                 timerStatus: 'end',
@@ -448,6 +570,16 @@ const sendDeviceCommand = async (req, res) => {
                 lastPausedAt: null,
                 timerDuration: 0
             });
+            
+            // Notify mobile clients tentang refund jika ada
+            if (refundInfo) {
+                notifyMobileClients({
+                    type: 'member_refund_processed',
+                    deviceId: id,
+                    refundInfo: refundInfo,
+                    timestamp: now.toISOString()
+                });
+            }
         }
 
         // Kirim command ke device
@@ -465,19 +597,26 @@ const sendDeviceCommand = async (req, res) => {
         // Get updated device data
         const updatedDevice = await Device.findByPk(id);
 
-        return res.status(200).json({
-            message: `Berhasil mengirim perintah ${command} ke device`,
-            data: {
-                command: result.data,
-                device: {
-                    id: updatedDevice.id,
-                    timerStatus: updatedDevice.timerStatus,
-                    timerStart: updatedDevice.timerStart,
-                    timerDuration: updatedDevice.timerDuration,
-                    timerElapsed: updatedDevice.timerElapsed,
-                    lastPausedAt: updatedDevice.lastPausedAt
-                }
+        const responseData = {
+            command: result.data,
+            device: {
+                id: updatedDevice.id,
+                timerStatus: updatedDevice.timerStatus,
+                timerStart: updatedDevice.timerStart,
+                timerDuration: updatedDevice.timerDuration,
+                timerElapsed: updatedDevice.timerElapsed,
+                lastPausedAt: updatedDevice.lastPausedAt
             }
+        };
+
+        // Tambahkan informasi refund jika ada
+        if (refundInfo) {
+            responseData.refund = refundInfo;
+        }
+
+        return res.status(200).json({
+            message: `Berhasil mengirim perintah ${command} ke device${refundInfo ? ` dengan refund Rp${refundInfo.refundAmount}` : ''}`,
+            data: responseData
         });
 
     } catch (error) {
