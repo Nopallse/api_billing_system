@@ -53,7 +53,7 @@ const checkAndEndExpiredTransactions = async () => {
                     
                     const endTime = new Date(startTime.getTime() + (device.timerDuration * 1000));
                     await activeTransaction.update({
-                        end: endTime.toTimeString().split(' ')[0], // Format HH:MM:SS
+                        end: endTime, // Gunakan Date object langsung, bukan toTimeString()
                         duration: device.timerDuration // Pastikan duration sesuai waktu yang digunakan
                     });
                     
@@ -546,13 +546,24 @@ const sendDeviceCommand = async (req, res) => {
                 }
                 
                 // Update transaksi dengan waktu selesai
-                // Gunakan format HH:MM:SS yang kompatibel dengan MySQL TIME column
-                const endTime = new Date().toTimeString().split(' ')[0]; // Format: "HH:MM:SS"
+                // Gunakan format DATE yang kompatibel dengan model Transaction
+                const endTime = new Date(); // Full datetime object
+                
+                console.log(`🐛 DEBUG endTime generation:`);
+                console.log(`- endDateTime:`, endTime);
+                console.log(`- typeof endTime:`, typeof endTime);
+                console.log(`- endTime.toISOString():`, endTime.toISOString());
                 
                 const finalCost = activeTransaction.cost - (refundInfo?.refundAmount || 0);
                 
+                console.log(`🐛 DEBUG transaction update data:`);
+                console.log(`- Transaction ID:`, activeTransaction.id);
+                console.log(`- end value:`, endTime);
+                console.log(`- duration:`, usedTime);
+                console.log(`- cost:`, finalCost);
+                
                 await activeTransaction.update({
-                    end: endTime,
+                    end: endTime, // Gunakan Date object langsung
                     duration: usedTime, // Update duration ke waktu yang benar-benar digunakan
                     cost: finalCost // Kurangi biaya sesuai refund
                 });
