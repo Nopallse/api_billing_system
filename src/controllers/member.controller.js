@@ -12,8 +12,8 @@ const memberController = {
       const whereClause = {};
       if (search) {
         whereClause[Op.or] = [
-          { email: { [Op.iLike]: `%${search}%` } },
-          { username: { [Op.iLike]: `%${search}%` } }
+          { email: { [Op.like]: `%${search}%` } },
+          { username: { [Op.like]: `%${search}%` } }
         ];
       }
 
