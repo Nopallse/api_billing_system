@@ -129,9 +129,23 @@ const createTransaction = async (req, res) => {
         //     });
         // }
 
-        //hitung cost berdasarkan kategori
+        // Hitung cost (duration dari frontend diasumsikan DETIK)
         const category = await Category.findByPk(device.categoryId);
-        const cost = category.cost * (duration/category.periode);
+        if (!category) {
+            return res.status(400).json({ message: 'Kategori device tidak ditemukan' });
+        }
+        const { calculateCost } = require('../utils/cost');
+        const durationSeconds = Number(duration);
+        if (isNaN(durationSeconds) || durationSeconds <= 0) {
+            return res.status(400).json({ message: 'Duration harus berupa angka detik yang valid (> 0)' });
+        }
+        const cost = calculateCost(durationSeconds, category);
+        if (cost <= 0) {
+            return res.status(400).json({
+                message: 'Perhitungan biaya menghasilkan nilai tidak valid',
+                data: { durationSeconds, periodeMenit: category.periode, costPerPeriode: category.cost }
+            });
+        }
 
         const transactionId = uuidv4();
      

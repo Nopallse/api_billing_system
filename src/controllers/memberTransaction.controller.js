@@ -138,17 +138,42 @@ const createMemberTransaction = async (req, res) => {
         }
 
         // Hitung cost berdasarkan kategori
+        // NOTE: duration yang diterima dari frontend adalah dalam SATUAN DETIK
         const category = await Category.findByPk(device.categoryId);
-        const cost = category.cost * (duration/category.periode);
+        if (!category) {
+            return res.status(400).json({
+                message: 'Kategori device tidak ditemukan'
+            });
+        }
+
+        const durationSeconds = Number(duration);
+        if (isNaN(durationSeconds) || durationSeconds <= 0) {
+            return res.status(400).json({
+                message: 'Duration harus berupa angka detik yang valid (> 0)'
+            });
+        }
+
+    // Gunakan util perhitungan biaya yang konsisten
+    const { calculateCost } = require('../utils/cost');
+    const cost = calculateCost(durationSeconds, category);
+        if (cost <= 0) {
+            return res.status(400).json({
+                message: 'Perhitungan biaya menghasilkan nilai tidak valid',
+                data: { durationSeconds, periodeMenit: category.periode, costPerPeriode: category.cost }
+            });
+        }
+
+        // Simpan deposit sebelum perubahan agar bisa ditampilkan & rollback bila gagal
+        const previousDeposit = Number(member.deposit);
 
         // Cek apakah deposit member mencukupi
-        if (member.deposit < cost) {
+        if (previousDeposit < cost) {
             return res.status(400).json({
                 message: 'Deposit tidak mencukupi',
                 data: {
-                    currentDeposit: member.deposit,
+                    currentDeposit: previousDeposit,
                     requiredCost: cost,
-                    shortfall: cost - member.deposit
+                    shortfall: cost - previousDeposit
                 }
             });
         }
@@ -174,9 +199,9 @@ const createMemberTransaction = async (req, res) => {
             isMemberTransaction: true
         });
 
-        // Kurangi deposit member
-        const newDeposit = parseInt(member.deposit) - cost;
-        await member.update({ deposit: newDeposit });
+    // Kurangi deposit member (pastikan tetap integer >= 0)
+    const newDeposit = previousDeposit - cost;
+    await member.update({ deposit: newDeposit });
 
         // Kirim data ke ESP32
         const result = sendToESP32({
@@ -186,13 +211,15 @@ const createMemberTransaction = async (req, res) => {
 
         // Cek hasil pengiriman
         if (!result.success) {
-            // Jika gagal mengirim, hapus transaksi dan kembalikan deposit
+            // Jika gagal mengirim, hapus transaksi dan rollback deposit
             await transaction.destroy();
-            await member.update({ deposit: member.deposit }); // Kembalikan deposit
+            await member.update({ deposit: previousDeposit });
+            console.error(`Failed to send command to device ${deviceId}:`, result.message);
             return res.status(500).json({
                 message: `Gagal mengirim data ke device: ${result.message}`
             });
         }
+        console.log(`✅ Transaction ${transaction.id} created and command sent to device ${deviceId}`);
       
         return res.status(201).json({
             message: 'Transaksi member berhasil dibuat',
@@ -203,8 +230,8 @@ const createMemberTransaction = async (req, res) => {
                     id: member.id,
                     username: member.username,
                     email: member.email,
-                    previousDeposit: member.deposit,
-                    newDeposit: newDeposit,
+                    previousDeposit,
+                    newDeposit,
                     deductedAmount: cost
                 }
             }

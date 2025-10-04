@@ -376,39 +376,33 @@ const sendDeviceCommand = async (req, res) => {
 
 const addTime = async (req, res) => {
     const { deviceId } = req.params;
-    const { additionalTime } = req.body;
+    const { additionalTime } = req.body; // minutes to add (existing behavior)
 
     console.log('Add time request:', { deviceId, additionalTime });
 
     try {
-        // Validasi input
         if (!additionalTime || typeof additionalTime !== 'number' || additionalTime <= 0) {
             return res.status(400).json({
-                message: 'Additional time harus berupa angka positif (dalam detik)'
+                message: 'Additional time harus berupa angka menit positif (> 0)'
             });
         }
 
-        // Cari transaksi berdasarkan ID
-
-
-        const device = await Device.findByPk(deviceId,{
-            include: [{
-                model: Category
-            }]
+        const device = await Device.findByPk(deviceId, {
+            include: [{ model: Category }]
         });
-        const additionalTimeInSeconds = additionalTime * 60;
+        if (!device) {
+            return res.status(404).json({ message: 'Device tidak ditemukan' });
+        }
+        if (!device.Category) {
+            return res.status(400).json({ message: 'Kategori device tidak ditemukan' });
+        }
 
-       
-
-        
-        // Cek apakah device sedang memiliki timer aktif atau di-pause
         if (device.timerStatus !== 'start') {
             return res.status(400).json({
                 message: 'Device tidak memiliki timer yang aktif. Timer mungkin sudah selesai atau belum dimulai.'
             });
         }
 
-        // Cek apakah device memiliki timer yang di-pause di WebSocket
         const { isTimerPaused } = require('../wsClient');
         if (isTimerPaused(device.id)) {
             return res.status(400).json({
@@ -416,74 +410,104 @@ const addTime = async (req, res) => {
             });
         }
 
-        // Kirim perintah add time ke device
+        // Temukan transaksi aktif (seharusnya hanya 1 dengan end null)
+        const activeTransaction = await Transaction.findOne({
+            where: { deviceId, end: null },
+            order: [['createdAt', 'DESC']]
+        });
+        if (!activeTransaction) {
+            return res.status(404).json({ message: 'Tidak ada transaksi aktif untuk device ini' });
+        }
+
+        const additionalSeconds = additionalTime * 60;
+        const newDurationSeconds = Number(activeTransaction.duration) + additionalSeconds;
+
+        const { calculateCost } = require('../utils/cost');
+        const totalCost = calculateCost(newDurationSeconds, device.Category);
+        if (totalCost <= 0) {
+            return res.status(400).json({
+                message: 'Perhitungan biaya menghasilkan nilai tidak valid',
+                data: { newDurationSeconds, periodeMenit: device.Category.periode, costPerPeriode: device.Category.cost }
+            });
+        }
+        const incrementalCost = totalCost - activeTransaction.cost;
+
+        let previousDeposit = null;
+        let newDeposit = null;
+        let memberData = null;
+        if (activeTransaction.memberId) {
+            const member = await Member.findByPk(activeTransaction.memberId);
+            if (!member) {
+                return res.status(400).json({ message: 'Member untuk transaksi ini tidak ditemukan' });
+            }
+            previousDeposit = Number(member.deposit);
+            if (previousDeposit < incrementalCost) {
+                return res.status(400).json({
+                    message: 'Deposit tidak mencukupi untuk menambah waktu',
+                    data: {
+                        currentDeposit: previousDeposit,
+                        requiredAdditional: incrementalCost,
+                        shortfall: incrementalCost - previousDeposit
+                    }
+                });
+            }
+            newDeposit = previousDeposit - incrementalCost;
+            // Kurangi deposit terlebih dahulu (akan di-rollback jika sendAddTime gagal)
+            await member.update({ deposit: newDeposit });
+            memberData = { id: member.id, username: member.username, email: member.email, previousDeposit, newDeposit, deductedAdditional: incrementalCost };
+        }
+
+        // Update transaksi (durasi & total biaya)
+        await activeTransaction.update({
+            duration: newDurationSeconds,
+            cost: totalCost
+        });
+
+        // Update device
+        await device.update({ timerDuration: newDurationSeconds });
+
+        // Kirim perintah add time ke device (detik)
         const result = await sendAddTime({
             deviceId: device.id,
-            additionalTime: additionalTimeInSeconds 
+            additionalTime: additionalSeconds
         });
 
         if (!result.success) {
-            return res.status(400).json({
-                message: result.message
+            // Rollback perubahan jika gagal
+            await activeTransaction.update({
+                duration: activeTransaction.duration - additionalSeconds,
+                cost: activeTransaction.cost - incrementalCost
             });
+            await device.update({ timerDuration: device.timerDuration - additionalSeconds });
+            if (activeTransaction.memberId && previousDeposit !== null) {
+                const member = await Member.findByPk(activeTransaction.memberId);
+                if (member) await member.update({ deposit: previousDeposit });
+            }
+            return res.status(500).json({ message: `Gagal mengirim perintah ke device: ${result.message}` });
         }
 
-        const newDeviceDuration = device.timerDuration + additionalTimeInSeconds;
-        const newCost = device.Category.cost * (additionalTime/device.Category.periode);
-
-        // Cek apakah device ini memiliki transaksi member yang aktif
-        const activeTransaction = await Transaction.findOne({
-            where: {
-                deviceId: deviceId,
-                end: null // Transaksi yang masih aktif
-            },
-            include: [{
-                model: Member,
-                as: 'member',
-                required: false
-            }]
-        });
-
-        const isMemberTransaction = activeTransaction && activeTransaction.memberId !== null;
-
-        // Update transaksi
-        const transaction = await Transaction.create({
-            deviceId: deviceId,
-            memberId: isMemberTransaction ? activeTransaction.memberId : null,
-            start: device.timerStart,
-            end: null, // Transaksi aktif tidak boleh memiliki end timestamp
-            duration: newDeviceDuration,
-            cost: newCost,
-            isMemberTransaction: isMemberTransaction
-        });
-
-        // Update device timer duration
-        await device.update({
-            timerDuration: newDeviceDuration
-        });
-
-
-        // Notify mobile clients
         notifyMobileClients({
             type: 'transaction_time_added',
-            transactionId: transaction.id,
+            transactionId: activeTransaction.id,
             deviceId: device.id,
-            additionalTime: additionalTime,
-            newDuration: newDeviceDuration,
-            newCost: newCost,
+            additionalTime: additionalTime, // minutes
+            newDuration: newDurationSeconds,
+            totalCost: totalCost,
+            incrementalCost: incrementalCost,
             timestamp: new Date().toISOString()
         });
 
         return res.status(200).json({
-            message: `Berhasil menambah waktu ${additionalTime} menit  ke device`,
+            message: `Berhasil menambah waktu ${additionalTime} menit ke device`,
             data: {
                 transaction: {
-                    id: transaction.id,
-                    deviceId: transaction.deviceId,
-                    duration: transaction.duration,
-                    cost: transaction.cost,
-                    start: transaction.start,
-                    end: transaction.end
+                    id: activeTransaction.id,
+                    deviceId: activeTransaction.deviceId,
+                    duration: newDurationSeconds,
+                    cost: totalCost,
+                    start: activeTransaction.start,
+                    end: activeTransaction.end,
+                    incrementalCost
                 },
                 device: {
                     id: device.id,
@@ -491,15 +515,13 @@ const addTime = async (req, res) => {
                     timerStatus: device.timerStatus,
                     timerDuration: device.timerDuration
                 },
-                addedTime: additionalTime
+                addedTimeMinutes: additionalTime,
+                member: memberData
             }
         });
-
     } catch (error) {
         console.error('Add time to transaction error:', error);
-        return res.status(500).json({
-            message: error.message
-        });
+        return res.status(500).json({ message: error.message });
     }
 };
 
