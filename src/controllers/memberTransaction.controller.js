@@ -197,6 +197,9 @@ const createMemberTransaction = async (req, res) => {
         });
 
         // Buat transaksi dengan memberId
+        // Hitung deposit baru
+        const newDeposit = previousDeposit - cost;
+        
         const transaction = await Transaction.create({
             id: transactionId,
             memberId: memberId,
@@ -217,9 +220,8 @@ const createMemberTransaction = async (req, res) => {
             newDeposit
         });
 
-    // Kurangi deposit member (pastikan tetap integer >= 0)
-    const newDeposit = previousDeposit - cost;
-    await member.update({ deposit: newDeposit });
+        // Kurangi deposit member (pastikan tetap integer >= 0)
+        await member.update({ deposit: newDeposit });
 
         // Kirim data ke ESP32
         const result = sendToESP32({
