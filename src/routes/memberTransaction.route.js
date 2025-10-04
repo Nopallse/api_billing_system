@@ -6,7 +6,10 @@ const {
     getMemberTransactionById,
     getMemberTransactionsByMemberId,
     updateMemberTransaction,
-    deleteMemberTransaction
+    deleteMemberTransaction,
+    addTimeToMemberTransaction,
+    stopMemberTransaction,
+    resumeMemberTransaction
 } = require('../controllers/memberTransaction.controller');
 const { tokenValidation } = require('../middlewares/auth.middleware');
 
@@ -27,6 +30,15 @@ router.put('/:id', tokenValidation, updateMemberTransaction);
 
 // DELETE /api/member-transactions/:id - Delete member transaction
 router.delete('/:id', tokenValidation, deleteMemberTransaction);
+
+// POST /api/member-transactions/add-time - Add time to active member transaction
+router.post('/add-time', tokenValidation, addTimeToMemberTransaction);
+
+// POST /api/member-transactions/stop - Stop/pause member transaction
+router.post('/stop', tokenValidation, stopMemberTransaction);
+
+// POST /api/member-transactions/resume - Resume member transaction
+router.post('/resume', tokenValidation, resumeMemberTransaction);
 
 module.exports = router;
 

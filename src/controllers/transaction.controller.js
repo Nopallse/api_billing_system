@@ -3,6 +3,12 @@ const { Transaction, Device, Category, Member } = require('../models');
 const { sendToESP32, getConnectionStatus, onDeviceDisconnect, notifyMobileClients, sendAddTime } = require('../wsClient');
 const { v4: uuidv4 } = require('uuid');
 const { Op } = require('sequelize');
+const { 
+    logTransactionStart, 
+    logTransactionEnd,
+    getTransactionActivities,
+    getTransactionSummary 
+} = require('../utils/transactionActivityLogger');
 
 // Register disconnect callback untuk semua device
 const registerDisconnectHandlers = () => {
@@ -171,6 +177,11 @@ const createTransaction = async (req, res) => {
             isMemberTransaction: false
         });
 
+        // Log aktivitas start transaksi
+        await logTransactionStart(transactionId, deviceId, duration, cost, false, {
+            userId: req.user.id
+        });
+
         // Kirim data ke ESP32
         const result = sendToESP32({
             deviceId,
@@ -333,7 +344,7 @@ const getTransactionById = async (req, res) => {
             });
         }
 
-        // Format data untuk receipt
+        // Format data untuk response
         const transactionData = transaction.toJSON();
         
         // Hitung informasi receipt
@@ -377,12 +388,18 @@ const getTransactionById = async (req, res) => {
                 transactionStatus: transactionData.end ? 'completed' : 'active'
             };
         }
+
+        // Dapatkan aktivitas dan ringkasan transaksi
+        const activities = await getTransactionActivities(id);
+        const activitySummary = await getTransactionSummary(id);
         
         return res.status(200).json({
             message: 'Success',
             data: {
                 ...transactionData,
-                receipt: receiptInfo
+                receipt: receiptInfo,
+                activities,
+                activitySummary
             }
         });
     } catch (error) {

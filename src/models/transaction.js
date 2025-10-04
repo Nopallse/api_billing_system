@@ -20,6 +20,12 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'memberId',
         as: 'member'
       });
+
+      // Relasi dengan TransactionActivity
+      Transaction.hasMany(models.TransactionActivity, {
+        foreignKey: 'transactionId',
+        as: 'activities'
+      });
     }
   }
   Transaction.init({

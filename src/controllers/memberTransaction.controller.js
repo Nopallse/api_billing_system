@@ -4,6 +4,15 @@ const { sendToESP32, getConnectionStatus, onDeviceDisconnect, notifyMobileClient
 const { v4: uuidv4 } = require('uuid');
 const { Op } = require('sequelize');
 const bcrypt = require('bcryptjs');
+const { 
+    logTransactionStart, 
+    logTransactionStop, 
+    logTransactionResume, 
+    logAddTime, 
+    logTransactionEnd,
+    getTransactionActivities,
+    getTransactionSummary 
+} = require('../utils/transactionActivityLogger');
 
 // Register disconnect callback untuk semua device
 const registerDisconnectHandlers = () => {
@@ -199,6 +208,15 @@ const createMemberTransaction = async (req, res) => {
             isMemberTransaction: true
         });
 
+        // Log aktivitas start transaksi
+        await logTransactionStart(transactionId, deviceId, duration, cost, true, {
+            memberId: member.id,
+            username: member.username,
+            email: member.email,
+            previousDeposit,
+            newDeposit
+        });
+
     // Kurangi deposit member (pastikan tetap integer >= 0)
     const newDeposit = previousDeposit - cost;
     await member.update({ deposit: newDeposit });
@@ -380,10 +398,18 @@ const getMemberTransactionById = async (req, res) => {
                 message: 'Transaction not found'
             });
         }
+
+        // Dapatkan aktivitas dan ringkasan transaksi
+        const activities = await getTransactionActivities(id);
+        const summary = await getTransactionSummary(id);
         
         return res.status(200).json({
             message: 'Success',
-            data: transaction
+            data: {
+                ...transaction.toJSON(),
+                activities,
+                activitySummary: summary
+            }
         });
     } catch (error) {
         console.error('Error getting member transaction:', error);
@@ -547,12 +573,282 @@ const deleteMemberTransaction = async (req, res) => {
     }
 };
 
+// Menambah waktu pada transaksi member yang sedang aktif
+const addTimeToMemberTransaction = async (req, res) => {
+    try {
+        const { transactionId, additionalDuration, paymentMethod = 'deposit', pin } = req.body;
+        
+        // Validasi input
+        if (!transactionId || !additionalDuration) {
+            return res.status(400).json({
+                message: 'transactionId dan additionalDuration wajib diisi'
+            });
+        }
+
+        // Cek transaksi
+        const transaction = await Transaction.findByPk(transactionId, {
+            include: [
+                {
+                    model: Device,
+                    include: [{ model: Category }]
+                },
+                {
+                    model: Member,
+                    as: 'member'
+                }
+            ]
+        });
+
+        if (!transaction) {
+            return res.status(404).json({
+                message: 'Transaksi tidak ditemukan'
+            });
+        }
+
+        if (transaction.end !== null) {
+            return res.status(400).json({
+                message: 'Transaksi sudah selesai, tidak bisa menambah waktu'
+            });
+        }
+
+        // Validasi PIN jika menggunakan deposit
+        if (paymentMethod === 'deposit') {
+            if (!pin) {
+                return res.status(400).json({
+                    message: 'PIN diperlukan untuk pembayaran menggunakan deposit'
+                });
+            }
+
+            const isPinValid = await bcrypt.compare(pin, transaction.member.pin);
+            if (!isPinValid) {
+                return res.status(401).json({
+                    message: 'PIN tidak valid'
+                });
+            }
+        }
+
+        // Hitung biaya tambahan
+        const additionalDurationSeconds = Number(additionalDuration);
+        if (isNaN(additionalDurationSeconds) || additionalDurationSeconds <= 0) {
+            return res.status(400).json({
+                message: 'Additional duration harus berupa angka detik yang valid (> 0)'
+            });
+        }
+
+        const { calculateCost } = require('../utils/cost');
+        const additionalCost = calculateCost(additionalDurationSeconds, transaction.Device.Category);
+
+        let memberBalanceInfo = null;
+
+        // Proses pembayaran
+        if (paymentMethod === 'deposit') {
+            const previousBalance = Number(transaction.member.deposit);
+            
+            if (previousBalance < additionalCost) {
+                return res.status(400).json({
+                    message: 'Deposit tidak mencukupi untuk menambah waktu',
+                    data: {
+                        currentDeposit: previousBalance,
+                        requiredCost: additionalCost,
+                        shortfall: additionalCost - previousBalance
+                    }
+                });
+            }
+
+            const newBalance = previousBalance - additionalCost;
+            await transaction.member.update({ deposit: newBalance });
+
+            memberBalanceInfo = {
+                previousBalance,
+                newBalance
+            };
+        }
+
+        // Update durasi dan biaya transaksi
+        const newTotalDuration = transaction.duration + additionalDurationSeconds;
+        const newTotalCost = transaction.cost + additionalCost;
+
+        await transaction.update({
+            duration: newTotalDuration,
+            cost: newTotalCost
+        });
+
+        // Update device timer
+        await transaction.Device.update({
+            timerDuration: newTotalDuration
+        });
+
+        // Kirim command ke ESP32 untuk menambah waktu
+        const result = sendAddTime({
+            deviceId: transaction.deviceId,
+            additionalTime: additionalDurationSeconds
+        });
+
+        if (!result.success) {
+            // Rollback jika gagal
+            await transaction.update({
+                duration: transaction.duration - additionalDurationSeconds,
+                cost: transaction.cost - additionalCost
+            });
+            
+            if (memberBalanceInfo) {
+                await transaction.member.update({ deposit: memberBalanceInfo.previousBalance });
+            }
+
+            return res.status(500).json({
+                message: `Gagal mengirim command ke device: ${result.message}`
+            });
+        }
+
+        // Log aktivitas penambahan waktu
+        await logAddTime(
+            transactionId, 
+            additionalDurationSeconds, 
+            additionalCost, 
+            paymentMethod, 
+            memberBalanceInfo
+        );
+
+        return res.status(200).json({
+            message: 'Waktu berhasil ditambahkan',
+            data: {
+                transactionId,
+                additionalDuration: additionalDurationSeconds,
+                additionalCost,
+                paymentMethod,
+                newTotalDuration,
+                newTotalCost,
+                memberBalance: memberBalanceInfo?.newBalance,
+                deviceCommand: result.data
+            }
+        });
+
+    } catch (error) {
+        console.error('Error adding time to member transaction:', error);
+        return res.status(500).json({
+            message: 'Terjadi kesalahan saat menambah waktu transaksi',
+            error: error.message
+        });
+    }
+};
+
+// Stop transaksi member
+const stopMemberTransaction = async (req, res) => {
+    try {
+        const { transactionId, reason = 'Manual stop by user' } = req.body;
+
+        if (!transactionId) {
+            return res.status(400).json({
+                message: 'transactionId wajib diisi'
+            });
+        }
+
+        const transaction = await Transaction.findByPk(transactionId, {
+            include: [{ model: Device }]
+        });
+
+        if (!transaction) {
+            return res.status(404).json({
+                message: 'Transaksi tidak ditemukan'
+            });
+        }
+
+        if (transaction.end !== null) {
+            return res.status(400).json({
+                message: 'Transaksi sudah selesai'
+            });
+        }
+
+        // Update device status ke pause
+        await transaction.Device.update({
+            timerStatus: 'pause',
+            lastPausedAt: new Date()
+        });
+
+        // Log aktivitas stop
+        await logTransactionStop(transactionId, reason);
+
+        return res.status(200).json({
+            message: 'Transaksi berhasil dihentikan sementara',
+            data: {
+                transactionId,
+                reason,
+                status: 'paused'
+            }
+        });
+
+    } catch (error) {
+        console.error('Error stopping member transaction:', error);
+        return res.status(500).json({
+            message: 'Terjadi kesalahan saat menghentikan transaksi',
+            error: error.message
+        });
+    }
+};
+
+// Resume transaksi member
+const resumeMemberTransaction = async (req, res) => {
+    try {
+        const { transactionId, reason = 'Manual resume by user' } = req.body;
+
+        if (!transactionId) {
+            return res.status(400).json({
+                message: 'transactionId wajib diisi'
+            });
+        }
+
+        const transaction = await Transaction.findByPk(transactionId, {
+            include: [{ model: Device }]
+        });
+
+        if (!transaction) {
+            return res.status(404).json({
+                message: 'Transaksi tidak ditemukan'
+            });
+        }
+
+        if (transaction.end !== null) {
+            return res.status(400).json({
+                message: 'Transaksi sudah selesai'
+            });
+        }
+
+        // Update device status ke active
+        await transaction.Device.update({
+            timerStatus: 'start',
+            lastPausedAt: null
+        });
+
+        // Log aktivitas resume
+        await logTransactionResume(transactionId, reason);
+
+        return res.status(200).json({
+            message: 'Transaksi berhasil dilanjutkan',
+            data: {
+                transactionId,
+                reason,
+                status: 'active'
+            }
+        });
+
+    } catch (error) {
+        console.error('Error resuming member transaction:', error);
+        return res.status(500).json({
+            message: 'Terjadi kesalahan saat melanjutkan transaksi',
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     createMemberTransaction,
     getAllMemberTransactions,
     getMemberTransactionById,
     getMemberTransactionsByMemberId,
     updateMemberTransaction,
-    deleteMemberTransaction
+    deleteMemberTransaction,
+    addTimeToMemberTransaction,
+    stopMemberTransaction,
+    resumeMemberTransaction
 };
 
