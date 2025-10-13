@@ -711,6 +711,7 @@ const deleteTransaction = async (req, res) => {
 // Finish regular transaction (bayar di akhir)
 const finishRegularTransaction = async (req, res) => {
     try {
+        console.log('Finishing regular transaction with request body:>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>', req.body);
         const { deviceId } = req.body;
         const userId = req.user.id;
 
