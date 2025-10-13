@@ -6,9 +6,26 @@ const { Op } = require('sequelize');
 const getConnectionStatus = (req, res) => {
     try {
         const status = wsClient.getConnectionStatus();
-        res.status(200).json(status);
+        
+        // Tambahkan informasi tambahan untuk debugging
+        console.log('🔌📊 Connection status requested');
+        console.log('🔌📊 WebSocket server active:', !!wsClient.wss);
+        console.log('🔌📊 Total WebSocket clients:', status.totalClients);
+        console.log('🔌📊 Registered devices:', status.registeredDevices);
+        console.log('🔌📊 Mobile clients:', status.mobileClients);
+        console.log('🔌📊 Online users:', status.onlineUsers);
+        
+        res.status(200).json({
+            ...status,
+            timestamp: new Date().toISOString(),
+            serverInfo: {
+                nodeEnv: process.env.NODE_ENV || 'development',
+                uptime: process.uptime(),
+                memoryUsage: process.memoryUsage()
+            }
+        });
     } catch (error) {
-        console.error('Error getting connection status:', error);
+        console.error('🔌❌ Error getting connection status:', error);
         res.status(500).json({ message: 'Failed to get connection status', error: error.message });
     }
 };

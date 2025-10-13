@@ -155,7 +155,11 @@ const initWebSocketServer = (server) => {
     });
     
     wss.on('connection', (ws, req) => {
-        console.log('New WebSocket connection');
+        const clientIP = req.socket.remoteAddress;
+        const userAgent = req.headers['user-agent'];
+        console.log(`🔌📱 New WebSocket connection from IP: ${clientIP}`);
+        console.log(`🔌📱 User Agent: ${userAgent}`);
+        console.log(`🔌📱 Total active connections: ${wss.clients.size}`);
         
         ws.isAlive = true;
         ws.on('pong', heartbeat);
@@ -174,22 +178,42 @@ const initWebSocketServer = (server) => {
                 // Handle mobile client registration
                 if (data.type === 'mobile_client') {
                     mobileClients.add(ws);
-                    console.log('Mobile client registered for notifications');
+                    console.log('🔌📱 Mobile client registered for notifications');
+                    console.log(`🔌📱 Total mobile clients: ${mobileClients.size}`);
                     
                     // Jika ada userId, register juga sebagai user online
                     const userId = data.userId;
-                    if (userId) {
+                    if (userId && userId !== 'unknown') {
                         // Update existing connection if exists
                         if (userConnections.has(userId)) {
                             const existingWs = userConnections.get(userId);
                             if (existingWs !== ws) {
                                 existingWs.close();
-                                console.log(`Closing old connection for user ${userId}`);
+                                console.log(`🔌📱 Closing old connection for user ${userId}`);
                             }
                         }
                         userConnections.set(userId, ws);
                         onlineUsers.add(userId);
-                        console.log(`Mobile client registered with user ${userId} and marked as online`);
+                        console.log(`🔌✅ Mobile client registered with user ${userId} and marked as online`);
+                        console.log(`🔌📱 Total online users: ${onlineUsers.size}`);
+                        
+                        // Send confirmation back to client
+                        ws.send(JSON.stringify({
+                            type: 'mobile_registration_success',
+                            userId: userId,
+                            timestamp: new Date().toISOString(),
+                            message: 'Successfully registered as mobile client'
+                        }));
+                    } else {
+                        console.log('🔌📱 Mobile client registered without userId');
+                        
+                        // Send confirmation back to client
+                        ws.send(JSON.stringify({
+                            type: 'mobile_registration_success',
+                            userId: 'anonymous',
+                            timestamp: new Date().toISOString(),
+                            message: 'Successfully registered as anonymous mobile client'
+                        }));
                     }
                     return;
                 }
@@ -301,19 +325,22 @@ const initWebSocketServer = (server) => {
         });
         
         ws.on('close', async () => {
-            console.log('Client disconnected');
+            console.log('🔌❌ Client disconnected');
+            console.log(`🔌📱 Remaining active connections: ${wss.clients.size - 1}`);
             
             // Check if it's a mobile client
             if (mobileClients.has(ws)) {
                 mobileClients.delete(ws);
-                console.log('Mobile client disconnected');
+                console.log('🔌📱❌ Mobile client disconnected');
+                console.log(`🔌📱 Remaining mobile clients: ${mobileClients.size}`);
                 
                 // Juga hapus dari user online jika mobile client memiliki userId
                 for (let [userId, client] of userConnections.entries()) {
                     if (client === ws) {
                         userConnections.delete(userId);
                         onlineUsers.delete(userId);
-                        console.log(`Mobile client with user ${userId} disconnected and marked as offline`);
+                        console.log(`🔌📱❌ Mobile client with user ${userId} disconnected and marked as offline`);
+                        console.log(`🔌📱 Remaining online users: ${onlineUsers.size}`);
                         break;
                     }
                 }
@@ -788,13 +815,17 @@ const getConnectionStatus = () => {
         }
     });
 
-    console.log('Current connected devices:', devices);
-    console.log('Active timers:', Array.from(activeTimers));
-    console.log('Paused devices:', Array.from(pausedDevices));
+    console.log('🔌📊 Current connected devices:', devices);
+    console.log('🔌⏱️ Active timers:', Array.from(activeTimers));
+    console.log('🔌⏸️ Paused devices:', Array.from(pausedDevices));
+    console.log('🔌📱 Mobile clients connected:', mobileClients.size);
+    console.log('🔌👥 Online users:', Array.from(onlineUsers));
 
     return {
         totalClients: wss ? wss.clients.size : 0,
         registeredDevices: connectedClients.size,
+        mobileClients: mobileClients.size,
+        onlineUsers: Array.from(onlineUsers),
         devices: devices
     };
 };
