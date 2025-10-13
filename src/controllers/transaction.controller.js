@@ -735,26 +735,35 @@ const finishRegularTransaction = async (req, res) => {
             });
         }
 
-        // Cari transaksi aktif untuk device ini
+        // Cari transaksi aktif untuk device ini (khusus untuk user yang sama)
         const activeTransaction = await Transaction.findOne({
             where: {
                 deviceId: deviceId,
                 end: null,
+                paymentType: 'end'  // Pastikan ini transaksi bayar di akhir
             },
             order: [['createdAt', 'DESC']]
         });
 
         if (!activeTransaction) {
             return res.status(404).json({
-                message: 'Tidak ada transaksi aktif untuk device ini'
+                message: 'Tidak ada transaksi bayar di akhir yang aktif untuk device ini dan user ini'
             });
         }
 
         const endTime = new Date();
-        const startTime = new Date(activeTransaction.start);
+        
+        // Gunakan createdAt sebagai start time karena start hanya berisi TIME
+        const startTime = new Date(activeTransaction.createdAt);
         
         // Hitung durasi dalam detik
         const duration = Math.floor((endTime - startTime) / 1000);
+        
+        console.log('Duration calculation:', {
+            startTime: startTime.toISOString(),
+            endTime: endTime.toISOString(),
+            durationSeconds: duration
+        });
         
         // Hitung cost berdasarkan durasi
         const costPerMinute = device.Category ? device.Category.cost : 0;
@@ -828,20 +837,20 @@ const finishRegularTransaction = async (req, res) => {
             message: 'Transaksi berhasil diselesaikan',
             data: {
                 transaction: {
-                    id: activeTransaction.id,
+                    id: updatedTransaction.id,
                     deviceId,
-                    start: activeTransaction.start,
-                    end: endTime,
-                    duration,
-                    cost: totalCost,
+                    start: updatedTransaction.start,
+                    end: updatedTransaction.end,
+                    duration: updatedTransaction.duration,
+                    cost: updatedTransaction.cost,
                     paymentType: 'end'
                 },
                 receipt: {
-                    transactionId: activeTransaction.id,
+                    transactionId: updatedTransaction.id,
                     deviceName: device.name,
                     category: device.Category?.categoryName || 'Unknown',
-                    startTime: activeTransaction.start,
-                    endTime: endTime,
+                    startTime: startTime.toISOString(),
+                    endTime: endTime.toISOString(),
                     duration: `${Math.floor(duration / 3600)}j ${Math.floor((duration % 3600) / 60)}m ${duration % 60}d`,
                     totalCost: totalCost
                 }
