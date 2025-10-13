@@ -1,6 +1,6 @@
 // transactionController.js
 const { Transaction, Device, Category, Member } = require('../models');
-const { sendToESP32, getConnectionStatus, onDeviceDisconnect, notifyMobileClients, sendAddTime } = require('../wsClient');
+const { sendToESP32, getConnectionStatus, onDeviceDisconnect, notifyMobileClients, sendAddTime, sendCommand } = require('../wsClient');
 const { v4: uuidv4 } = require('uuid');
 const { Op } = require('sequelize');
 const { 
@@ -240,9 +240,19 @@ const createRegularTransaction = async (req, res) => {
             });
         }
 
-        if (!device.isConnected) {
+        // Cek apakah device terkoneksi ke WebSocket (real-time check)
+        const connectedDevices = getConnectionStatus();
+        console.log('Checking connection for device:', deviceId);
+        console.log('Connected devices:', connectedDevices.devices);
+        
+        // Cek apakah device ada dalam daftar yang terkoneksi
+        const isConnected = connectedDevices.devices.some(connectedDevice => 
+            connectedDevice.deviceId === deviceId
+        );
+        
+        if (!isConnected) {
             return res.status(400).json({
-                message: 'Device tidak terkoneksi'
+                message: 'Device tidak terkoneksi ke server WebSocket'
             });
         }
 
@@ -286,7 +296,9 @@ const createRegularTransaction = async (req, res) => {
         });
 
         // Send command ke ESP32 untuk start unlimited
-        const result = await sendToESP32(deviceId, 'start_unlimited', {
+        const result = sendToESP32({
+            deviceId,
+            timer: -1, // -1 indicates unlimited time
             transactionId: transactionId,
             userId: userId,
             startTime: startTime.toISOString()
@@ -764,11 +776,9 @@ const finishRegularTransaction = async (req, res) => {
         });
 
         // Send command ke ESP32 untuk stop
-        const result = await sendToESP32(deviceId, 'end', {
-            transactionId: activeTransaction.id,
-            endTime: endTime.toISOString(),
-            duration: duration,
-            cost: totalCost
+        const result = await sendCommand({
+            deviceId,
+            command: 'end'
         });
 
         // Update device status
