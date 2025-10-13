@@ -740,7 +740,6 @@ const finishRegularTransaction = async (req, res) => {
             where: {
                 deviceId: deviceId,
                 end: null,
-                userId: userId
             },
             order: [['createdAt', 'DESC']]
         });
