@@ -2,6 +2,8 @@ const express = require("express");
 const router = express.Router();
 const { 
     createTransaction,
+    createRegularTransaction,
+    finishRegularTransaction,
     getAllTransactions,
     getTransactionById,
     getTransactionsByUserId,
@@ -12,6 +14,12 @@ const { tokenValidation, verifyAdmin } = require("../middlewares/auth.middleware
 
 // Create transaction (memerlukan auth)
 router.post("/create", tokenValidation, createTransaction);
+
+// Create regular transaction - bayar di akhir (memerlukan auth)
+router.post("/regular/create", tokenValidation, createRegularTransaction);
+
+// Finish regular transaction - bayar di akhir (memerlukan auth)
+router.post("/regular/finish", tokenValidation, finishRegularTransaction);
 
 // Get all transactions (admin only)
 router.get("/", tokenValidation,  getAllTransactions);

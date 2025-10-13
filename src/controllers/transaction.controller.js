@@ -214,6 +214,146 @@ const createTransaction = async (req, res) => {
     }
 };
 
+// Create regular transaction (bayar di akhir)
+const createRegularTransaction = async (req, res) => {
+    try {
+        const { deviceId } = req.body;
+        const userId = req.user.id;
+
+        // Validasi input
+        if (!deviceId) {
+            return res.status(400).json({
+                message: 'Device ID wajib diisi'
+            });
+        }
+
+        // Cari device
+        const device = await Device.findByPk(deviceId, {
+            include: [{
+                model: Category
+            }]
+        });
+
+        if (!device) {
+            return res.status(404).json({
+                message: 'Device tidak ditemukan'
+            });
+        }
+
+        if (!device.isConnected) {
+            return res.status(400).json({
+                message: 'Device tidak terkoneksi'
+            });
+        }
+
+        // Cek apakah device sedang digunakan
+        if (device.timerStatus === 'start') {
+            return res.status(400).json({
+                message: 'Device sedang digunakan'
+            });
+        }
+
+        // Cek apakah ada transaksi aktif untuk device ini
+        const activeTransaction = await Transaction.findOne({
+            where: {
+                deviceId: deviceId,
+                end: null
+            }
+        });
+
+        if (activeTransaction) {
+            return res.status(400).json({
+                message: 'Device masih memiliki transaksi aktif'
+            });
+        }
+
+        const startTime = new Date();
+        const transactionId = uuidv4();
+
+        // Buat transaksi dengan duration null (unlimited)
+        const transaction = await Transaction.create({
+            id: transactionId,
+            deviceId: deviceId,
+            userId: userId,
+            start: startTime,
+            end: null,
+            duration: null, // Unlimited duration
+            cost: null, // Will be calculated when finished
+            isMemberTransaction: false,
+            memberId: null,
+            paymentType: 'end', // Bayar di akhir
+            status: 'active'
+        });
+
+        // Send command ke ESP32 untuk start unlimited
+        const result = await sendToESP32(deviceId, 'start_unlimited', {
+            transactionId: transactionId,
+            userId: userId,
+            startTime: startTime.toISOString()
+        });
+
+        if (!result.success) {
+            // Rollback transaksi jika gagal send command
+            await transaction.destroy();
+            return res.status(500).json({
+                message: 'Gagal mengirim command ke device',
+                error: result.error
+            });
+        }
+
+        // Update device timer status
+        await device.update({
+            timerStatus: 'start',
+            timerStart: startTime,
+            timerDuration: null, // Unlimited
+            timerElapsed: 0
+        });
+
+        // Log aktivitas transaksi
+        await logTransactionStart(transactionId, {
+            deviceId,
+            userId,
+            transactionType: 'regular',
+            paymentType: 'end',
+            duration: 'unlimited'
+        });
+
+        // Notify mobile clients
+        notifyMobileClients('device_status_changed', {
+            deviceId: deviceId,
+            status: 'on',
+            transaction: {
+                id: transactionId,
+                type: 'regular',
+                paymentType: 'end',
+                startTime: startTime.toISOString()
+            }
+        });
+
+        return res.status(201).json({
+            message: 'Transaksi regular berhasil dimulai (bayar di akhir)',
+            data: {
+                transaction: {
+                    id: transactionId,
+                    deviceId,
+                    userId,
+                    start: startTime,
+                    paymentType: 'end',
+                    status: 'active'
+                },
+                deviceCommand: result.data
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error creating regular transaction:', error);
+        return res.status(500).json({
+            message: 'Terjadi kesalahan saat membuat transaksi regular',
+            error: error.message
+        });
+    }
+};
+
 const getAllTransactions = async (req, res) => {
     try {
         const { 
@@ -560,11 +700,145 @@ const deleteTransaction = async (req, res) => {
     }
 };
 
+// Finish regular transaction (bayar di akhir)
+const finishRegularTransaction = async (req, res) => {
+    try {
+        const { deviceId } = req.body;
+        const userId = req.user.id;
+
+        // Validasi input
+        if (!deviceId) {
+            return res.status(400).json({
+                message: 'Device ID wajib diisi'
+            });
+        }
+
+        // Cari device
+        const device = await Device.findByPk(deviceId, {
+            include: [{
+                model: Category
+            }]
+        });
+
+        if (!device) {
+            return res.status(404).json({
+                message: 'Device tidak ditemukan'
+            });
+        }
+
+        // Cari transaksi aktif untuk device ini
+        const activeTransaction = await Transaction.findOne({
+            where: {
+                deviceId: deviceId,
+                end: null,
+                userId: userId
+            },
+            order: [['createdAt', 'DESC']]
+        });
+
+        if (!activeTransaction) {
+            return res.status(404).json({
+                message: 'Tidak ada transaksi aktif untuk device ini'
+            });
+        }
+
+        const endTime = new Date();
+        const startTime = new Date(activeTransaction.start);
+        
+        // Hitung durasi dalam detik
+        const duration = Math.floor((endTime - startTime) / 1000);
+        
+        // Hitung cost berdasarkan durasi
+        const costPerMinute = device.Category ? device.Category.cost : 0;
+        const periodMinutes = device.Category ? device.Category.periode : 60;
+        const totalMinutes = Math.ceil(duration / 60); // Round up ke menit terdekat
+        const periods = Math.ceil(totalMinutes / periodMinutes);
+        const totalCost = periods * costPerMinute;
+
+        // Update transaksi
+        await activeTransaction.update({
+            end: endTime,
+            duration: duration,
+            cost: totalCost,
+            status: 'completed'
+        });
+
+        // Send command ke ESP32 untuk stop
+        const result = await sendToESP32(deviceId, 'end', {
+            transactionId: activeTransaction.id,
+            endTime: endTime.toISOString(),
+            duration: duration,
+            cost: totalCost
+        });
+
+        // Update device status
+        await device.update({
+            timerStatus: 'stop',
+            timerStart: null,
+            timerDuration: null,
+            timerElapsed: 0,
+            lastPausedAt: null
+        });
+
+        // Log aktivitas transaksi
+        await logTransactionEnd(activeTransaction.id, {
+            duration,
+            cost: totalCost,
+            endReason: 'user_finish'
+        });
+
+        // Notify mobile clients
+        notifyMobileClients('device_status_changed', {
+            deviceId: deviceId,
+            status: 'off',
+            transaction: {
+                id: activeTransaction.id,
+                duration,
+                cost: totalCost,
+                endTime: endTime.toISOString()
+            }
+        });
+
+        return res.status(200).json({
+            message: 'Transaksi berhasil diselesaikan',
+            data: {
+                transaction: {
+                    id: activeTransaction.id,
+                    deviceId,
+                    start: activeTransaction.start,
+                    end: endTime,
+                    duration,
+                    cost: totalCost,
+                    paymentType: 'end'
+                },
+                receipt: {
+                    transactionId: activeTransaction.id,
+                    deviceName: device.name,
+                    category: device.Category?.categoryName || 'Unknown',
+                    startTime: activeTransaction.start,
+                    endTime: endTime,
+                    duration: `${Math.floor(duration / 3600)}j ${Math.floor((duration % 3600) / 60)}m ${duration % 60}d`,
+                    totalCost: totalCost
+                }
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error finishing regular transaction:', error);
+        return res.status(500).json({
+            message: 'Terjadi kesalahan saat menyelesaikan transaksi',
+            error: error.message
+        });
+    }
+};
+
 // Fungsi untuk menambah waktu pada transaksi yang sedang aktif
 
 
 module.exports = {
     createTransaction,
+    createRegularTransaction,
+    finishRegularTransaction,
     getAllTransactions,
     getTransactionById,
     getTransactionsByUserId,
