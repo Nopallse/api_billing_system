@@ -200,11 +200,14 @@ const createMemberTransaction = async (req, res) => {
         // Hitung deposit baru
         const newDeposit = previousDeposit - cost;
         
+        // Format start time untuk kolom TIME (HH:MM:SS)
+        const startTimeFormatted = new Date(start).toTimeString().split(' ')[0]; // "HH:MM:SS"
+        
         const transaction = await Transaction.create({
             id: transactionId,
             memberId: memberId,
             deviceId,
-            start,
+            start: startTimeFormatted,
             end: null, // Transaksi aktif tidak boleh memiliki end timestamp
             duration,
             cost: cost,

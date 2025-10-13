@@ -166,11 +166,14 @@ const createTransaction = async (req, res) => {
 
         //
         // Buat transaksi - end harus null untuk transaksi yang sedang aktif
+        // Format start time untuk kolom TIME (HH:MM:SS)
+        const startTimeFormatted = new Date(start).toTimeString().split(' ')[0]; // "HH:MM:SS"
+        
         const transaction = await Transaction.create({
             id: transactionId,
             userId: req.user.id,
             deviceId,
-            start,
+            start: startTimeFormatted,
             end: null, // Transaksi aktif tidak boleh memiliki end timestamp
             duration,
             cost: cost,
@@ -276,12 +279,15 @@ const createRegularTransaction = async (req, res) => {
         const startTime = new Date();
         const transactionId = uuidv4();
 
+        // Format start time untuk kolom TIME (HH:MM:SS)
+        const startTimeFormatted = startTime.toTimeString().split(' ')[0]; // "HH:MM:SS"
+
         // Buat transaksi dengan duration null (unlimited)
         const transaction = await Transaction.create({
             id: transactionId,
             deviceId: deviceId,
             userId: userId,
-            start: startTime,
+            start: startTimeFormatted,
             end: null,
             duration: null, // Unlimited duration
             cost: null, // Will be calculated when finished
