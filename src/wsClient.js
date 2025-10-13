@@ -708,7 +708,7 @@ const sendAddTime = (data) => {
         };
     }
 
-    if (!additionalTime || typeof additionalTime !== 'number' || additionalTime <= 0) {
+    if (!additionalTime || typeof additionalTime !== 'number' ) {
         return {
             success: false,
             message: 'Additional time must be a positive number'
