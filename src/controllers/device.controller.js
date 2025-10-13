@@ -448,6 +448,7 @@ const sendDeviceCommand = async (req, res) => {
 
         const now = new Date();
         let refundInfo = null; // Deklarasi variabel untuk menyimpan informasi refund
+        let activeTransaction = null; // Deklarasi variabel untuk active transaction
 
         // Handle timer status berdasarkan command
         if (command === 'start') {
@@ -504,7 +505,7 @@ const sendDeviceCommand = async (req, res) => {
             }
         } else if (command === 'end') {
             // Cari transaksi aktif untuk device ini
-            const activeTransaction = await Transaction.findOne({
+            activeTransaction = await Transaction.findOne({
                 where: { 
                     deviceId: id, 
                     end: null 
@@ -659,6 +660,21 @@ const sendDeviceCommand = async (req, res) => {
         // Tambahkan informasi refund jika ada
         if (refundInfo) {
             responseData.refund = refundInfo;
+        }
+
+        // Tambahkan transaction ID jika ada active transaction yang sudah diakhiri
+        if (command === 'end' && activeTransaction) {
+            responseData.transaction = {
+                id: activeTransaction.id,
+                deviceId: activeTransaction.deviceId,
+                start: activeTransaction.start,
+                end: activeTransaction.end || now,
+                duration: activeTransaction.duration,
+                cost: activeTransaction.cost,
+                isMemberTransaction: activeTransaction.isMemberTransaction,
+                memberId: activeTransaction.memberId
+            };
+            console.log(`✅ Transaction included in response: ${activeTransaction.id}`);
         }
 
         return res.status(200).json({
