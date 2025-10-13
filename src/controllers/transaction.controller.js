@@ -764,11 +764,27 @@ const finishRegularTransaction = async (req, res) => {
         const totalCost = periods * costPerMinute;
 
         // Update transaksi
-        await activeTransaction.update({
+        console.log('Updating transaction with:', {
+            transactionId: activeTransaction.id,
+            endTime: endTime,
+            duration: duration,
+            cost: totalCost,
+            status: 'completed'
+        });
+        
+        const updatedTransaction = await activeTransaction.update({
             end: endTime,
             duration: duration,
             cost: totalCost,
             status: 'completed'
+        });
+        
+        console.log('Transaction updated successfully:', {
+            id: updatedTransaction.id,
+            end: updatedTransaction.end,
+            duration: updatedTransaction.duration,
+            cost: updatedTransaction.cost,
+            status: updatedTransaction.status
         });
 
         // Send command ke ESP32 untuk stop

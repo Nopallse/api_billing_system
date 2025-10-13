@@ -37,6 +37,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     deviceId: DataTypes.UUID,
     memberId: DataTypes.UUID,
+    userId: DataTypes.UUID,
     start: DataTypes.DATE,
     end: DataTypes.DATE,
     duration: DataTypes.INTEGER,
@@ -45,6 +46,16 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BOOLEAN,
       allowNull: false,
       defaultValue: false
+    },
+    paymentType: {
+      type: DataTypes.ENUM('upfront', 'end'),
+      allowNull: true,
+      defaultValue: 'upfront'
+    },
+    status: {
+      type: DataTypes.ENUM('active', 'completed', 'cancelled'),
+      allowNull: true,
+      defaultValue: 'active'
     },
     createdAt: DataTypes.DATE,
     updatedAt: DataTypes.DATE
