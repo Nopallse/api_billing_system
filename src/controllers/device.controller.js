@@ -692,14 +692,14 @@ const sendDeviceCommand = async (req, res) => {
 
 const addTime = async (req, res) => {
     const { deviceId } = req.params;
-    const { additionalTime, useDeposit = true } = req.body; // minutes to add, useDeposit default true untuk backward compatibility
+    const { additionalTime, useDeposit = true } = req.body; // minutes to add/subtract, useDeposit default true untuk backward compatibility
 
-    console.log('Add time request:', { deviceId, additionalTime, useDeposit });
+    console.log('Add/Subtract time request:', { deviceId, additionalTime, useDeposit });
 
     try {
-        if (!additionalTime || typeof additionalTime !== 'number' || additionalTime <= 0) {
+        if (!additionalTime || typeof additionalTime !== 'number' || additionalTime === 0) {
             return res.status(400).json({
-                message: 'Additional time harus berupa angka menit positif (> 0)'
+                message: 'Additional time harus berupa angka menit yang tidak nol (positif untuk menambah, negatif untuk mengurangi)'
             });
         }
 
@@ -722,7 +722,7 @@ const addTime = async (req, res) => {
         const { isTimerPaused } = require('../wsClient');
         if (isTimerPaused(device.id)) {
             return res.status(400).json({
-                message: 'Device memiliki timer yang di-pause. Harap resume timer terlebih dahulu sebelum menambah waktu.'
+                message: 'Device memiliki timer yang di-pause. Harap resume timer terlebih dahulu sebelum mengubah waktu.'
             });
         }
 
@@ -738,11 +738,22 @@ const addTime = async (req, res) => {
         const additionalSeconds = additionalTime * 60;
         const newDurationSeconds = Number(activeTransaction.duration) + additionalSeconds;
 
+        // Validasi durasi tidak boleh kurang dari 0
+        if (newDurationSeconds < 0) {
+            return res.status(400).json({
+                message: 'Durasi tidak boleh kurang dari 0. Maksimal pengurangan adalah waktu saat ini.',
+                data: { 
+                    currentDuration: activeTransaction.duration,
+                    maxReduction: Math.floor(activeTransaction.duration / 60)
+                }
+            });
+        }
+
         const { calculateCost } = require('../utils/cost');
         const totalCost = calculateCost(newDurationSeconds, device.Category);
-        if (totalCost <= 0) {
+        if (totalCost < 0) {
             return res.status(400).json({
-                message: 'Perhitungan biaya menghasilkan nilai tidak valid',
+                message: 'Perhitungan biaya menghasilkan nilai negatif',
                 data: { newDurationSeconds, periodeMenit: device.Category.periode, costPerPeriode: device.Category.cost }
             });
         }
@@ -751,13 +762,16 @@ const addTime = async (req, res) => {
         let previousDeposit = null;
         let newDeposit = null;
         let memberData = null;
+        
         if (activeTransaction.memberId && useDeposit) {
             const member = await Member.findByPk(activeTransaction.memberId);
             if (!member) {
                 return res.status(400).json({ message: 'Member untuk transaksi ini tidak ditemukan' });
             }
             previousDeposit = Number(member.deposit);
-            if (previousDeposit < incrementalCost) {
+            
+            // Jika menambah waktu (incrementalCost positif), cek apakah deposit cukup
+            if (incrementalCost > 0 && previousDeposit < incrementalCost) {
                 return res.status(400).json({
                     message: 'Deposit tidak mencukupi untuk menambah waktu',
                     data: {
@@ -767,10 +781,18 @@ const addTime = async (req, res) => {
                     }
                 });
             }
+            
+            // Jika mengurangi waktu (incrementalCost negatif), deposit akan ditambah (refund)
             newDeposit = previousDeposit - incrementalCost;
-            // Kurangi deposit terlebih dahulu (akan di-rollback jika sendAddTime gagal)
             await member.update({ deposit: newDeposit });
-            memberData = { id: member.id, username: member.username, email: member.email, previousDeposit, newDeposit, deductedAdditional: incrementalCost };
+            memberData = { 
+                id: member.id, 
+                username: member.username, 
+                email: member.email, 
+                previousDeposit, 
+                newDeposit, 
+                deductedAdditional: incrementalCost 
+            };
         } else if (activeTransaction.memberId && !useDeposit) {
             // Jika transaksi member tapi tidak menggunakan deposit, hanya ambil info member
             const member = await Member.findByPk(activeTransaction.memberId);
@@ -811,17 +833,17 @@ const addTime = async (req, res) => {
         }
 
         notifyMobileClients({
-            type: 'transaction_time_added',
+            type: 'transaction_time_modified',
             transactionId: activeTransaction.id,
             deviceId: device.id,
-            additionalTime: additionalTime, // minutes
+            additionalTime: additionalTime, // minutes (bisa positif atau negatif)
             newDuration: newDurationSeconds,
             totalCost: totalCost,
             incrementalCost: incrementalCost,
             timestamp: new Date().toISOString()
         });
 
-        // Log aktivitas penambahan waktu
+        // Log aktivitas penambahan/pengurangan waktu
         const paymentMethod = (activeTransaction.memberId && useDeposit) ? 'deposit' : 'cash';
         const memberBalanceInfo = (activeTransaction.memberId && useDeposit && previousDeposit !== null) ? {
             previousBalance: previousDeposit,
@@ -836,8 +858,11 @@ const addTime = async (req, res) => {
             memberBalanceInfo
         );
 
+        const actionText = additionalTime > 0 ? 'menambah' : 'mengurangi';
+        const timeText = Math.abs(additionalTime);
+
         return res.status(200).json({
-            message: `Berhasil menambah waktu ${additionalTime} menit ke device`,
+            message: `Berhasil ${actionText} waktu ${timeText} menit ${additionalTime > 0 ? 'ke' : 'dari'} device`,
             data: {
                 transaction: {
                     id: activeTransaction.id,
@@ -854,12 +879,12 @@ const addTime = async (req, res) => {
                     timerStatus: device.timerStatus,
                     timerDuration: device.timerDuration
                 },
-                addedTimeMinutes: additionalTime,
+                modifiedTimeMinutes: additionalTime,
                 member: memberData
             }
         });
     } catch (error) {
-        console.error('Add time to transaction error:', error);
+        console.error('Modify time transaction error:', error);
         return res.status(500).json({ message: error.message });
     }
 };
