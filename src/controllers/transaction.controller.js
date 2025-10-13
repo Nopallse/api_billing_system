@@ -271,11 +271,7 @@ const createRegularTransaction = async (req, res) => {
             }
         });
 
-        if (activeTransaction) {
-            return res.status(400).json({
-                message: 'Device masih memiliki transaksi aktif'
-            });
-        }
+      
 
         const startTime = new Date();
         const transactionId = uuidv4();
