@@ -764,17 +764,20 @@ const finishRegularTransaction = async (req, res) => {
         const periods = Math.ceil(totalMinutes / periodMinutes);
         const totalCost = periods * costPerMinute;
 
+        // Format endTime untuk kolom TIME (HH:MM:SS)
+        const endTimeFormatted = endTime.toTimeString().split(' ')[0]; // "HH:MM:SS"
+
         // Update transaksi
         console.log('Updating transaction with:', {
             transactionId: activeTransaction.id,
-            endTime: endTime,
+            endTime: endTimeFormatted,
             duration: duration,
             cost: totalCost,
             status: 'completed'
         });
         
         const updatedTransaction = await activeTransaction.update({
-            end: endTime,
+            end: endTimeFormatted,
             duration: duration,
             cost: totalCost,
             status: 'completed'

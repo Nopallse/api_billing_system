@@ -38,7 +38,7 @@ module.exports = (sequelize, DataTypes) => {
     deviceId: DataTypes.UUID,
     memberId: DataTypes.UUID,
     start: DataTypes.DATE,
-    end: DataTypes.DATE,
+    end: DataTypes.TIME,
     duration: DataTypes.INTEGER,
     cost: DataTypes.INTEGER,
     isMemberTransaction: {
