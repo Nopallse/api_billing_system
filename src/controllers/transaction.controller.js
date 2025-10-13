@@ -788,7 +788,7 @@ const finishRegularTransaction = async (req, res) => {
         });
 
         // Send command ke ESP32 untuk stop
-        const result = await sendCommand({
+        await sendCommand({
             deviceId,
             command: 'end'
         });
