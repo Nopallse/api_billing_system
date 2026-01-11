@@ -1,4 +1,7 @@
-const { getConnectionStatus, isTimerActive, isUserOnline } = require('../wsClient');
+// WebSocket DISABLED - Stub functions
+const getConnectionStatus = () => ({ devices: [], totalDevices: 0 });
+const isTimerActive = () => false;
+const isUserOnline = () => false;
 const { Device, Transaction, Category, User, sequelize } = require('../models');
 const { Op } = require('sequelize');
 

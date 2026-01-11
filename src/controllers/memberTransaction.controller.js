@@ -1,6 +1,6 @@
 // memberTransactionController.js
+// WebSocket DISABLED - Backend hanya simpan status; kontrol relay via BLE langsung dari mobile app
 const { Transaction, Device, Category, Member } = require('../models');
-const { sendToESP32, getConnectionStatus, onDeviceDisconnect, notifyMobileClients, sendAddTime } = require('../wsClient');
 const { v4: uuidv4 } = require('uuid');
 const { Op } = require('sequelize');
 const bcrypt = require('bcryptjs');
@@ -13,70 +13,6 @@ const {
     getTransactionActivities,
     getTransactionSummary 
 } = require('../utils/transactionActivityLogger');
-
-// Register disconnect callback untuk semua device
-const registerDisconnectHandlers = () => {
-    onDeviceDisconnect('*', async (deviceId, reason) => {
-        console.log(`Device ${deviceId} disconnected with reason: ${reason}`);
-        
-        try {
-            // Cari device di database
-            const device = await Device.findByPk(deviceId);
-            if (!device) return;
-
-            // Jika device sedang memiliki timer aktif, jangan ubah status transaksi
-            // Biarkan transaksi tetap aktif agar bisa dilanjutkan
-            if (device.timerStatus === 'start') {
-                const now = new Date();
-                const elapsedTime = Math.floor((now - device.timerStart) / 1000);
-                
-                // Jangan update timerStatus, biarkan tetap 'start'
-                // Hanya update elapsed time dan lastPausedAt
-                await device.update({
-                    timerElapsed: elapsedTime,
-                    lastPausedAt: now
-                });
-
-                // Cari transaksi aktif untuk device ini
-                const activeTransaction = await Transaction.findOne({
-                    where: {
-                        deviceId: deviceId,
-                        end: null // Transaksi belum selesai
-                    },
-                    order: [['createdAt', 'DESC']]
-                });
-
-                if (activeTransaction) {
-                    // Jangan update transaksi, biarkan tetap aktif
-                    // Hanya update status menjadi 'paused' jika ada field status
-                    if (activeTransaction.status) {
-                        await activeTransaction.update({
-                            status: 'paused'
-                        });
-                    }
-
-                    console.log(`Transaction ${activeTransaction.id} paused for device ${deviceId} due to disconnect`);
-                }
-
-                // Notify mobile clients
-                notifyMobileClients({
-                    type: 'timer_paused_disconnect',
-                    deviceId: deviceId,
-                    timestamp: now.toISOString(),
-                    reason: reason,
-                    elapsedTime: elapsedTime,
-                    transactionId: activeTransaction?.id,
-                    canResume: true
-                });
-            }
-        } catch (error) {
-            console.error(`Error handling disconnect for device ${deviceId}:`, error);
-        }
-    });
-};
-
-// Initialize disconnect handlers
-registerDisconnectHandlers();
 
 // Membuat transaksi untuk member dengan validasi PIN
 const createMemberTransaction = async (req, res) => {
@@ -115,34 +51,17 @@ const createMemberTransaction = async (req, res) => {
             });
         }
 
-        // Cek apakah device terkoneksi ke WebSocket
-        const connectedDevices = getConnectionStatus();
-        console.log('Checking connection for device:', deviceId);
-        console.log('Connected devices:', connectedDevices.devices);
-        
-        // Cek apakah device ada dalam daftar yang terkoneksi
-        const isConnected = connectedDevices.devices.some(device => 
-            device.deviceId === deviceId || device.deviceId === deviceId
-        );
-        
-        if (!isConnected) {
-            return res.status(400).json({
-                message: 'Device tidak terkoneksi ke server WebSocket'
-            });
-        }
+        // Cek apakah ada transaksi aktif di database untuk device ini
+        const existingTransaction = await Transaction.findOne({
+            where: {
+                deviceId: deviceId,
+                end: null
+            }
+        });
 
-        // Cek apakah device sudah memiliki timer yang aktif atau di-pause
-        const { isTimerActive, isTimerPaused } = require('../wsClient');
-        
-        if (isTimerActive(deviceId)) {
+        if (existingTransaction) {
             return res.status(400).json({
-                message: 'Device masih memiliki timer yang aktif. Harap tunggu timer selesai atau gunakan command stop terlebih dahulu.'
-            });
-        }
-        
-        if (isTimerPaused(deviceId)) {
-            return res.status(400).json({
-                message: 'Device memiliki timer yang di-pause. Gunakan command start untuk melanjutkan timer yang ada, atau command end untuk mengakhiri timer.'
+                message: 'Device masih memiliki transaksi aktif. Harap akhiri atau selesaikan transaksi sebelumnya.'
             });
         }
 
@@ -162,9 +81,9 @@ const createMemberTransaction = async (req, res) => {
             });
         }
 
-    // Gunakan util perhitungan biaya yang konsisten
-    const { calculateCost } = require('../utils/cost');
-    const cost = calculateCost(durationSeconds, category);
+        // Gunakan util perhitungan biaya yang konsisten
+        const { calculateCost } = require('../utils/cost');
+        const cost = calculateCost(durationSeconds, category);
         if (cost <= 0) {
             return res.status(400).json({
                 message: 'Perhitungan biaya menghasilkan nilai tidak valid',
@@ -200,14 +119,14 @@ const createMemberTransaction = async (req, res) => {
         // Hitung deposit baru
         const newDeposit = previousDeposit - cost;
         
-        // Format start time untuk kolom TIME (HH:MM:SS)
-        const startTimeFormatted = new Date(start).toTimeString().split(' ')[0]; // "HH:MM:SS"
+        // Gunakan Date object langsung untuk kolom DATETIME
+        const startDateTime = new Date(start);
         
         const transaction = await Transaction.create({
             id: transactionId,
             memberId: memberId,
             deviceId,
-            start: startTimeFormatted,
+            start: startDateTime, // DATETIME object
             end: null, // Transaksi aktif tidak boleh memiliki end timestamp
             duration,
             cost: cost,
@@ -226,29 +145,13 @@ const createMemberTransaction = async (req, res) => {
         // Kurangi deposit member (pastikan tetap integer >= 0)
         await member.update({ deposit: newDeposit });
 
-        // Kirim data ke ESP32
-        const result = sendToESP32({
-            deviceId,
-            timer: Number(duration) // Pastikan timer adalah number
-        });
-
-        // Cek hasil pengiriman
-        if (!result.success) {
-            // Jika gagal mengirim, hapus transaksi dan rollback deposit
-            await transaction.destroy();
-            await member.update({ deposit: previousDeposit });
-            console.error(`Failed to send command to device ${deviceId}:`, result.message);
-            return res.status(500).json({
-                message: `Gagal mengirim data ke device: ${result.message}`
-            });
-        }
-        console.log(`✅ Transaction ${transaction.id} created and command sent to device ${deviceId}`);
+        // Tidak ada pengiriman command via WebSocket - relay dikontrol via BLE oleh mobile app
+        console.log(`✅ Transaction ${transaction.id} created for device ${deviceId}`);
       
         return res.status(201).json({
             message: 'Transaksi member berhasil dibuat',
             data: {
                 transaction,
-                deviceCommand: result.data,
                 member: {
                     id: member.id,
                     username: member.username,
@@ -678,34 +581,10 @@ const addTimeToMemberTransaction = async (req, res) => {
             cost: newTotalCost
         });
 
-        // Update device timer
+        // Update device timer di database saja; kontrol fisik dilakukan via BLE oleh client
         await transaction.Device.update({
             timerDuration: newTotalDuration
         });
-
-        // Kirim command ke ESP32 untuk menambah waktu
-        const result = sendAddTime({
-            deviceId: transaction.deviceId,
-            additionalTime: additionalDurationSeconds,
-            useDeposit: paymentMethod === 'deposit',
-            transactionId: transaction.id
-        });
-
-        if (!result.success) {
-            // Rollback jika gagal
-            await transaction.update({
-                duration: transaction.duration - additionalDurationSeconds,
-                cost: transaction.cost - additionalCost
-            });
-            
-            if (memberBalanceInfo) {
-                await transaction.member.update({ deposit: memberBalanceInfo.previousBalance });
-            }
-
-            return res.status(500).json({
-                message: `Gagal mengirim command ke device: ${result.message}`
-            });
-        }
 
         // Log aktivitas penambahan waktu
         await logAddTime(
@@ -725,8 +604,7 @@ const addTimeToMemberTransaction = async (req, res) => {
                 paymentMethod,
                 newTotalDuration,
                 newTotalCost,
-                memberBalance: memberBalanceInfo?.newBalance,
-                deviceCommand: result.data
+                memberBalance: memberBalanceInfo?.newBalance
             }
         });
 

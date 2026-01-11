@@ -1,12 +1,30 @@
 const{ Device, User, Category, Transaction, Member } = require('../models');
 const { v4: uuidv4 } = require('uuid');
-const { getConnectionStatus, isTimerActive, sendCommand, sendAddTime, notifyMobileClients } = require('../wsClient');
+// WebSocket DISABLED - Relay control via BLE
+// Stub functions untuk backward compatibility
+const getConnectionStatus = () => ({ devices: [], totalDevices: 0 });
+const isTimerActive = () => false;
+const sendCommand = () => ({ success: true, message: 'Relay via BLE' });
+const sendAddTime = () => ({ success: true, message: 'Relay via BLE' });
+const notifyMobileClients = () => {}; // No-op
 const { 
     logAddTime, 
     logTransactionStop, 
     logTransactionResume, 
-    logTransactionEnd 
+    logTransactionEnd,
+    syncOfflineActivities,
+    getTransactionActivities
 } = require('../utils/transactionActivityLogger');
+
+// Import helpers from transaction controller for usage calculation
+const { 
+    parseLocalDateTime, 
+    computeUsageSecondsFromActivities 
+} = require('./transaction.controller.helpers');
+
+// Grace period sebelum auto-finish (untuk handle offline scenario)
+// Nilai dalam detik - beri waktu untuk client reconnect dan sync
+const AUTO_FINISH_GRACE_PERIOD = 300; // 5 menit grace period
 
 // Fungsi untuk mengecek dan mengakhiri transaksi yang expired
 const checkAndEndExpiredTransactions = async () => {
@@ -31,8 +49,13 @@ const checkAndEndExpiredTransactions = async () => {
             const startTime = new Date(device.timerStart);
             const elapsedSeconds = Math.floor((now - startTime) / 1000);
             
-            if (elapsedSeconds >= device.timerDuration) {
-                console.log(`⏰ Timer expired for device ${device.id}, ending transaction...`);
+            // PENTING: Tambah grace period untuk handle offline scenario
+            // Client mungkin sudah add time tapi belum sync ke server
+            const expiredWithGrace = elapsedSeconds >= (device.timerDuration + AUTO_FINISH_GRACE_PERIOD);
+            
+            if (expiredWithGrace) {
+                console.log(`⏰ Timer expired (with grace period) for device ${device.id}, ending transaction...`);
+                console.log(`   → Elapsed: ${elapsedSeconds}s, Duration: ${device.timerDuration}s, Grace: ${AUTO_FINISH_GRACE_PERIOD}s`);
                 
                 // End active transaction if exists
                 const activeTransaction = device.Transactions && device.Transactions[0];
@@ -60,10 +83,11 @@ const checkAndEndExpiredTransactions = async () => {
                     const endTime = new Date(startTime.getTime() + (device.timerDuration * 1000));
                     await activeTransaction.update({
                         end: endTime, // Gunakan Date object langsung, bukan toTimeString()
-                        duration: device.timerDuration // Pastikan duration sesuai waktu yang digunakan
+                        duration: device.timerDuration, // Pastikan duration sesuai waktu yang digunakan
+                        status: 'completed' // Mark as completed
                     });
                     
-                    console.log(`✅ Transaction ${activeTransaction.id} ended automatically`);
+                    console.log(`✅ Transaction ${activeTransaction.id} ended automatically (status: completed)`);
                     
                     // Notify mobile clients
                     notifyMobileClients({
@@ -104,7 +128,7 @@ setInterval(checkAndEndExpiredTransactions, 30000);
 
 //create device
 const createDevice = async (req, res) => {
-    const {name, categoryId, id} = req.body;
+    const {name, categoryId, id, relayNumber} = req.body;
 
     try{
         // Validasi input
@@ -120,17 +144,11 @@ const createDevice = async (req, res) => {
             });
         }
 
-        // Cek koneksi websocket terlebih dahulu
-        const connectedDevices = getConnectionStatus();
-        const isConnected = connectedDevices.devices.some(device => 
-            device.deviceId === id || device.deviceId === id
-        );
-        
-        if (!isConnected) {
-            return res.status(400).json({
-                message: 'Device belum terkoneksi ke server WebSocket'
-            });
-        }
+        // Validasi relay number (1-4)
+        const validRelayNumber = relayNumber && relayNumber >= 1 && relayNumber <= 4 ? relayNumber : null;
+
+        // NOTE: Tidak perlu cek WebSocket lagi karena relay control sekarang via BLE
+        // Device akan dikontrol langsung dari mobile app via BLE ke ESP32
 
         // Cek apakah device sudah terdaftar
         const existingDevice = await Device.findOne({
@@ -149,11 +167,12 @@ const createDevice = async (req, res) => {
             });
         }
 
-        // Buat device baru
+        // Buat device baru dengan relay number
         const device = await Device.create({
             id: id,
             name,
-            categoryId
+            categoryId,
+            relayNumber: validRelayNumber
         });
 
         // Ambil data device dengan kategori
@@ -201,18 +220,14 @@ const getAllDevices = async (req, res) => {
             ]
         });
 
-        // Ambil status koneksi
+        // WebSocket disabled - getConnectionStatus returns empty
         const connectedStatus = getConnectionStatus();
-        const connectedDevices = new Map(
-            connectedStatus.devices.map(device => [device.deviceId, device])
-        );
 
         const now = new Date();
 
-        // Gabungkan data database dengan status koneksi
+        // Map device data dengan status dari database saja
         const devicesWithStatus = await Promise.all(devices.map(async (device) => {
             const deviceData = device.toJSON();
-            const connectionInfo = connectedDevices.get(device.id);
             const activeTransaction = deviceData.Transactions && deviceData.Transactions[0];
             
             // Update timerElapsed jika timer sedang berjalan
@@ -242,19 +257,17 @@ const getAllDevices = async (req, res) => {
             // Jika timerStatus adalah 'end' atau timer expired, maka tidak ada transaksi aktif
             const hasActiveTransaction = activeTransaction && device.timerStatus !== 'end' && !isTimerExpired;
             
-            // Tentukan status device
+            // Tentukan status device berdasarkan database timer status
             let deviceStatus = 'off';
-            if (connectionInfo) {
-                if (isTimerExpired && device.timerStatus === 'start') {
-                    deviceStatus = 'off'; // Timer habis, paksa status ke off
-                } else {
-                    deviceStatus = connectionInfo.status;
-                }
+            if (device.timerStatus === 'start' && !isTimerExpired) {
+                deviceStatus = 'running';
+            } else if (device.timerStatus === 'stop') {
+                deviceStatus = 'paused';
             }
             
             return {
                 ...deviceData,
-                isConnected: !!connectionInfo && connectionInfo.status !== 'pause_disconnected',
+                isConnected: false, // Always false (WebSocket disabled)
                 status: deviceStatus,
                 activeTransaction: hasActiveTransaction ? {
                     id: activeTransaction.id,
@@ -322,9 +335,8 @@ const getDeviceById = async (req, res) => {
             await device.update({ timerElapsed: elapsedSeconds });
         }
 
-        // Ambil status koneksi
+        // WebSocket disabled - no connection info
         const connectedStatus = getConnectionStatus();
-        const connectionInfo = connectedStatus.devices.find(d => d.deviceId === id);
 
         const deviceData = device.toJSON();
         const activeTransaction = deviceData.Transactions && deviceData.Transactions[0];
@@ -346,19 +358,17 @@ const getDeviceById = async (req, res) => {
         // Jika timerStatus adalah 'end' atau timer expired, maka tidak ada transaksi aktif
         const hasActiveTransaction = activeTransaction && device.timerStatus !== 'end' && !isTimerExpired;
         
-        // Tentukan status device
+        // Tentukan status device berdasarkan timer status saja (tidak ada WebSocket)
         let deviceStatus = 'off';
-        if (connectionInfo) {
-            if (isTimerExpired && device.timerStatus === 'start') {
-                deviceStatus = 'off'; // Timer habis, paksa status ke off
-            } else {
-                deviceStatus = connectionInfo.status;
-            }
+        if (device.timerStatus === 'start' && !isTimerExpired) {
+            deviceStatus = 'running';
+        } else if (device.timerStatus === 'stop') {
+            deviceStatus = 'paused';
         }
         
         const response = {
             ...deviceData,
-            isConnected: !!connectionInfo && connectionInfo.status !== 'pause_disconnected',
+            isConnected: false, // Always false (WebSocket disabled)
             status: deviceStatus,
             activeTransaction: hasActiveTransaction ? {
                 id: activeTransaction.id,
@@ -432,7 +442,7 @@ const deleteDevice = async (req, res) => {
 
 const sendDeviceCommand = async (req, res) => {
     const { id } = req.params;
-    const { command } = req.body;
+    const { command, skipActivityLog = false } = req.body;
 
     try {
         // Validasi device exists di database
@@ -452,24 +462,44 @@ const sendDeviceCommand = async (req, res) => {
 
         // Handle timer status berdasarkan command
         if (command === 'start') {
-            if (device.timerStatus === 'start' && device.lastPausedAt) {
-                // Jika timer sedang berjalan tapi di-pause (disconnect), resume timer
-                const pauseDuration = now - device.lastPausedAt;
-                // Update timer start dengan menambahkan durasi pause
+            // Cari transaksi aktif untuk logging
+            const activeTransactionForResume = await Transaction.findOne({
+                where: { 
+                    deviceId: id, 
+                    end: null 
+                },
+                order: [['createdAt', 'DESC']]
+            });
+
+            if (device.timerStatus === 'stop') {
+                // RESUME dari pause - reset timerStart ke NOW, timerDuration sudah berisi sisa waktu
                 await device.update({
-                    timerStart: new Date(device.timerStart.getTime() + pauseDuration),
+                    timerStart: now, // Reset ke sekarang
+                    timerStatus: 'start',
+                    lastPausedAt: null,
+                    timerElapsed: 0 // Reset elapsed karena mulai dari awal lagi
+                });
+
+                // Log aktivitas resume (skip jika dari offline sync)
+                if (activeTransactionForResume && !skipActivityLog) {
+                    await logTransactionResume(activeTransactionForResume.id, 'manual_resume');
+                    console.log(`📝 Activity logged: resume for transaction ${activeTransactionForResume.id}`);
+                } else if (skipActivityLog) {
+                    console.log(`⏭️ Resume activity log skipped (offline sync will handle it)`);
+                }
+            } else if (device.timerStatus === 'start' && device.lastPausedAt) {
+                // Jika timer sedang berjalan tapi di-pause (disconnect), resume timer
+                await device.update({
+                    timerStart: now, // Reset ke sekarang untuk sync
                     lastPausedAt: null
                 });
-            } else if (device.timerStatus === 'stop') {
-                // Jika timer di-pause manual, hitung elapsed time
-                if (device.lastPausedAt) {
-                    const pauseDuration = now - device.lastPausedAt;
-                    // Update timer start dengan menambahkan durasi pause
-                    await device.update({
-                        timerStart: new Date(device.timerStart.getTime() + pauseDuration),
-                        timerStatus: 'start',
-                        lastPausedAt: null
-                    });
+
+                // Log aktivitas resume (dari disconnect) - skip jika dari offline sync
+                if (activeTransactionForResume && !skipActivityLog) {
+                    await logTransactionResume(activeTransactionForResume.id, 'resume_from_disconnect');
+                    console.log(`📝 Activity logged: resume (from disconnect) for transaction ${activeTransactionForResume.id}`);
+                } else if (skipActivityLog) {
+                    console.log(`⏭️ Resume activity log skipped (offline sync will handle it)`);
                 }
             } else {
                 // Timer baru dimulai
@@ -479,14 +509,19 @@ const sendDeviceCommand = async (req, res) => {
                     timerElapsed: 0,
                     lastPausedAt: null
                 });
+                // Note: Untuk start baru, logging sudah dilakukan di endpoint startDevice/createTransaction
             }
         } else if (command === 'stop') {
             if (device.timerStatus === 'start') {
-                // Hitung elapsed time saat ini dalam detik
+                // Hitung elapsed time dan sisa waktu
                 const elapsedTime = Math.floor((now - device.timerStart) / 1000);
+                const remainingTime = Math.max(0, device.timerDuration - elapsedTime);
+                
+                // PENTING: Update timerDuration dengan SISA WAKTU untuk frozen countdown
                 await device.update({
                     timerStatus: 'stop',
                     timerElapsed: elapsedTime,
+                    timerDuration: remainingTime, // Simpan sisa waktu
                     lastPausedAt: now
                 });
 
@@ -499,8 +534,12 @@ const sendDeviceCommand = async (req, res) => {
                     order: [['createdAt', 'DESC']]
                 });
 
-                if (activeTransaction) {
+                // Log aktivitas stop (skip jika dari offline sync)
+                if (activeTransaction && !skipActivityLog) {
                     await logTransactionStop(activeTransaction.id, elapsedTime, 'manual_stop');
+                    console.log(`📝 Activity logged: stop for transaction ${activeTransaction.id}`);
+                } else if (skipActivityLog) {
+                    console.log(`⏭️ Stop activity log skipped (offline sync will handle it)`);
                 }
             }
         } else if (command === 'end') {
@@ -518,19 +557,25 @@ const sendDeviceCommand = async (req, res) => {
                 order: [['createdAt', 'DESC']]
             });
             
+            // PENTING: Hitung real usage dari activities DULU sebelum refund calculation
+            let realUsedTime = 0;
+            if (activeTransaction) {
+                const activities = await getTransactionActivities(activeTransaction.id);
+                realUsedTime = computeUsageSecondsFromActivities(
+                    activities,
+                    activeTransaction.start,
+                    now
+                );
+                console.log(`📊 Real usage from activities: ${realUsedTime}s`);
+            }
+            
             // Jika ada transaksi aktif dan ini adalah member transaction
             if (activeTransaction && activeTransaction.isMemberTransaction && activeTransaction.member) {
                 const member = activeTransaction.member;
                 const originalDuration = activeTransaction.duration; // dalam detik
                 
-                // Hitung waktu yang sudah digunakan
-                let usedTime = 0;
-                if (device.timerStart && device.timerStatus === 'start') {
-                    usedTime = Math.floor((now - device.timerStart) / 1000);
-                } else if (device.timerElapsed) {
-                    usedTime = device.timerElapsed;
-                }
-                
+                // Gunakan realUsedTime dari activities, bukan elapsed time
+                const usedTime = realUsedTime;
                 const remainingTime = Math.max(0, originalDuration - usedTime);
                 
                 console.log(`Member transaction end - Original: ${originalDuration}s, Used: ${usedTime}s, Remaining: ${remainingTime}s`);
@@ -566,29 +611,49 @@ const sendDeviceCommand = async (req, res) => {
                 }
                 
                 // Update transaksi dengan waktu selesai
-                // Gunakan format DATE yang kompatibel dengan model Transaction
-                const endTime = new Date(); // Full datetime object
+                // Gunakan Date object langsung untuk kolom DATETIME
+                const endDateTime = new Date();
                 
                 console.log(`🐛 DEBUG endTime generation:`);
-                console.log(`- endDateTime:`, endTime);
-                console.log(`- typeof endTime:`, typeof endTime);
-                console.log(`- endTime.toISOString():`, endTime.toISOString());
+                console.log(`- endDateTime:`, endDateTime);
+                console.log(`- endDateTime.toISOString():`, endDateTime.toISOString());
                 
                 const finalCost = activeTransaction.cost - (refundInfo?.refundAmount || 0);
                 
                 console.log(`🐛 DEBUG transaction update data:`);
                 console.log(`- Transaction ID:`, activeTransaction.id);
-                console.log(`- end value:`, endTime);
+                console.log(`- end value (DATETIME):`, endDateTime);
                 console.log(`- duration:`, usedTime);
                 console.log(`- cost:`, finalCost);
                 
                 await activeTransaction.update({
-                    end: endTime, // Gunakan Date object langsung
+                    end: endDateTime, // DATETIME object
                     duration: usedTime, // Update duration ke waktu yang benar-benar digunakan
-                    cost: finalCost // Kurangi biaya sesuai refund
+                    cost: finalCost, // Kurangi biaya sesuai refund
+                    status: 'completed' // Mark as completed
                 });
                 
-                console.log(`Transaction updated - Final cost: Rp${finalCost}, Duration: ${usedTime}s`);
+                console.log(`✅ Transaction updated - Final cost: Rp${finalCost}, Duration: ${usedTime}s, End: ${endDateTime.toISOString()}, Status: completed`);
+            } else if (activeTransaction) {
+                // REGULAR TRANSACTION (non-member) - also update end time
+                // Gunakan realUsedTime yang sudah dihitung di atas
+                const usedTime = realUsedTime;
+                
+                const endDateTime = new Date();
+                
+                console.log(`🐛 DEBUG Regular transaction end:`);
+                console.log(`- Transaction ID:`, activeTransaction.id);
+                console.log(`- end value (DATETIME):`, endDateTime);
+                console.log(`- duration:`, usedTime);
+                console.log(`- cost:`, activeTransaction.cost);
+                
+                await activeTransaction.update({
+                    end: endDateTime, // DATETIME object
+                    duration: usedTime,
+                    status: 'completed' // Mark as completed
+                });
+                
+                console.log(`✅ Regular transaction updated - Duration: ${usedTime}s, End: ${endDateTime.toISOString()}, Status: completed`);
             }
             
             // Reset semua status timer
@@ -600,23 +665,23 @@ const sendDeviceCommand = async (req, res) => {
                 timerDuration: 0
             });
 
-            // Log aktivitas END transaksi jika ada transaksi aktif
-            if (activeTransaction) {
+            // Log aktivitas END transaksi jika ada transaksi aktif (skip jika dari offline sync)
+            if (activeTransaction && !skipActivityLog) {
                 const finalCost = activeTransaction.cost - (refundInfo?.refundAmount || 0);
-                let usedTime = 0;
-                if (device.timerStart && device.timerStatus === 'start') {
-                    usedTime = Math.floor((now - device.timerStart) / 1000);
-                } else if (device.timerElapsed) {
-                    usedTime = device.timerElapsed;
-                }
+                
+                // realUsedTime sudah dihitung di awal blok 'end' command
+                console.log(`📊 Usage calculation for end: elapsed=${device.timerElapsed}s, realUsage=${realUsedTime}s`);
 
                 await logTransactionEnd(
                     activeTransaction.id, 
-                    usedTime, 
+                    realUsedTime,  // ✅ gunakan real usage dari activities
                     finalCost, 
                     'manual_end',
                     refundInfo
                 );
+                console.log(`📝 Activity logged: end for transaction ${activeTransaction.id} with usedTime=${realUsedTime}s`);
+            } else if (skipActivityLog) {
+                console.log(`⏭️ End activity log skipped (offline sync will handle it)`);
             }
             
             // Notify mobile clients tentang refund jika ada
@@ -630,23 +695,15 @@ const sendDeviceCommand = async (req, res) => {
             }
         }
 
-        // Kirim command ke device
-        const result = await sendCommand({
-            deviceId: id,
-            command
-        });
-
-        if (!result.success) {
-            return res.status(400).json({
-                message: result.message
-            });
-        }
+        // NOTE: Relay commands sekarang dikirim langsung via BLE dari mobile app ke ESP32
+        // Backend hanya update status database, tidak mengirim command ke WebSocket
+        // Ini karena flow baru: Data → API Server, Relay Control → BLE ke ESP32
 
         // Get updated device data
         const updatedDevice = await Device.findByPk(id);
 
         const responseData = {
-            command: result.data,
+            command: command,
             device: {
                 id: updatedDevice.id,
                 timerStatus: updatedDevice.timerStatus,
@@ -678,7 +735,7 @@ const sendDeviceCommand = async (req, res) => {
         }
 
         return res.status(200).json({
-            message: `Berhasil mengirim perintah ${command} ke device${refundInfo ? ` dengan refund Rp${refundInfo.refundAmount}` : ''}`,
+            message: `Berhasil update status ${command} untuk device${refundInfo ? ` dengan refund Rp${refundInfo.refundAmount}` : ''}`,
             data: responseData
         });
 
@@ -692,200 +749,279 @@ const sendDeviceCommand = async (req, res) => {
 
 const addTime = async (req, res) => {
     const { deviceId } = req.params;
-    const { additionalTime, useDeposit = true } = req.body; // minutes to add/subtract, useDeposit default true untuk backward compatibility
+    const { additionalTime, useDeposit = true, skipActivityLog = false } = req.body;
 
-    console.log('Add/Subtract time request:', { deviceId, additionalTime, useDeposit });
+    console.log('➕ ADD TIME request:', { deviceId, additionalTime, useDeposit, skipActivityLog });
 
     try {
+        const now = new Date();
+        
         if (!additionalTime || typeof additionalTime !== 'number' || additionalTime === 0) {
+            console.warn('❌ Validation error: additionalTime invalid');
             return res.status(400).json({
-                message: 'Additional time harus berupa angka menit yang tidak nol (positif untuk menambah, negatif untuk mengurangi)'
+                message: 'Additional time harus berupa angka menit yang tidak nol'
             });
         }
 
+        console.log('📦 Fetching device...');
         const device = await Device.findByPk(deviceId, {
             include: [{ model: Category }]
         });
+        
         if (!device) {
+            console.warn(`❌ Device not found: ${deviceId}`);
             return res.status(404).json({ message: 'Device tidak ditemukan' });
         }
+        
         if (!device.Category) {
+            console.warn(`❌ Category not found for device: ${deviceId}`);
             return res.status(400).json({ message: 'Kategori device tidak ditemukan' });
         }
 
         if (device.timerStatus !== 'start') {
+            console.warn(`❌ Timer not running: ${device.timerStatus}`);
             return res.status(400).json({
-                message: 'Device tidak memiliki timer yang aktif. Timer mungkin sudah selesai atau belum dimulai.'
+                message: 'Device tidak memiliki timer yang aktif'
             });
         }
 
-        const { isTimerPaused } = require('../wsClient');
-        if (isTimerPaused(device.id)) {
-            return res.status(400).json({
-                message: 'Device memiliki timer yang di-pause. Harap resume timer terlebih dahulu sebelum mengubah waktu.'
-            });
-        }
-
-        // Temukan transaksi aktif (seharusnya hanya 1 dengan end null)
+        console.log('📝 Fetching active transaction...');
         const activeTransaction = await Transaction.findOne({
             where: { deviceId, end: null },
             order: [['createdAt', 'DESC']]
         });
+        
         if (!activeTransaction) {
-            return res.status(404).json({ message: 'Tidak ada transaksi aktif untuk device ini' });
+            console.warn(`❌ No active transaction for device: ${deviceId}`);
+            return res.status(404).json({ message: 'Tidak ada transaksi aktif' });
         }
 
         const additionalSeconds = additionalTime * 60;
         const newDurationSeconds = Number(activeTransaction.duration) + additionalSeconds;
 
-        // Validasi durasi tidak boleh kurang dari 0
         if (newDurationSeconds < 0) {
+            console.warn(`❌ Duration negative: ${newDurationSeconds}`);
             return res.status(400).json({
-                message: 'Durasi tidak boleh kurang dari 0. Maksimal pengurangan adalah waktu saat ini.',
-                data: { 
-                    currentDuration: activeTransaction.duration,
-                    maxReduction: Math.floor(activeTransaction.duration / 60)
-                }
+                message: 'Durasi tidak boleh kurang dari 0'
             });
         }
 
+        console.log('💰 Calculating cost...');
         const { calculateCost } = require('../utils/cost');
         const totalCost = calculateCost(newDurationSeconds, device.Category);
+        
         if (totalCost < 0) {
+            console.warn(`❌ Cost negative: ${totalCost}`);
             return res.status(400).json({
-                message: 'Perhitungan biaya menghasilkan nilai negatif',
-                data: { newDurationSeconds, periodeMenit: device.Category.periode, costPerPeriode: device.Category.cost }
+                message: 'Perhitungan biaya menghasilkan nilai negatif'
             });
         }
+
         const incrementalCost = totalCost - activeTransaction.cost;
+        console.log(`📊 Cost calculation: old=${activeTransaction.cost}, new=${totalCost}, increment=${incrementalCost}`);
 
         let previousDeposit = null;
         let newDeposit = null;
         let memberData = null;
         
         if (activeTransaction.memberId && useDeposit) {
+            console.log('💳 Checking member deposit...');
             const member = await Member.findByPk(activeTransaction.memberId);
             if (!member) {
-                return res.status(400).json({ message: 'Member untuk transaksi ini tidak ditemukan' });
+                console.warn(`❌ Member not found: ${activeTransaction.memberId}`);
+                return res.status(400).json({ message: 'Member tidak ditemukan' });
             }
+            
             previousDeposit = Number(member.deposit);
             
-            // Jika menambah waktu (incrementalCost positif), cek apakah deposit cukup
             if (incrementalCost > 0 && previousDeposit < incrementalCost) {
+                console.warn(`❌ Insufficient deposit: have=${previousDeposit}, need=${incrementalCost}`);
                 return res.status(400).json({
-                    message: 'Deposit tidak mencukupi untuk menambah waktu',
-                    data: {
-                        currentDeposit: previousDeposit,
-                        requiredAdditional: incrementalCost,
-                        shortfall: incrementalCost - previousDeposit
-                    }
+                    message: 'Deposit tidak mencukupi'
                 });
             }
             
-            // Jika mengurangi waktu (incrementalCost negatif), deposit akan ditambah (refund)
             newDeposit = previousDeposit - incrementalCost;
+            console.log(`💳 Updating member deposit: ${previousDeposit} → ${newDeposit}`);
             await member.update({ deposit: newDeposit });
-            memberData = { 
-                id: member.id, 
-                username: member.username, 
-                email: member.email, 
-                previousDeposit, 
-                newDeposit, 
-                deductedAdditional: incrementalCost 
-            };
-        } else if (activeTransaction.memberId && !useDeposit) {
-            // Jika transaksi member tapi tidak menggunakan deposit, hanya ambil info member
-            const member = await Member.findByPk(activeTransaction.memberId);
-            if (member) {
-                memberData = { id: member.id, username: member.username, email: member.email, deposit: member.deposit };
-            }
+            memberData = { id: member.id, username: member.username, email: member.email, previousDeposit, newDeposit };
         }
 
-        // Update transaksi (durasi & total biaya)
+        console.log(`📝 Updating transaction ${activeTransaction.id}...`);
         await activeTransaction.update({
             duration: newDurationSeconds,
             cost: totalCost
         });
+        console.log(`✅ Transaction updated: duration=${newDurationSeconds}`);
 
-        // Update device
-        await device.update({ timerDuration: newDurationSeconds });
+        // PENTING: Hitung REMAINING TIME yang benar untuk device.timerDuration
+        // device.timerDuration adalah REMAINING TIME (sisa waktu), bukan total duration!
+        // 
+        // Cara hitung remaining time setelah add time:
+        // 1. Hitung berapa sisa waktu sebelum add time
+        // 2. Tambahkan additionalSeconds ke sisa waktu
+        
+        const timerStartDate = new Date(device.timerStart);
+        const elapsedSeconds = Math.floor((now - timerStartDate) / 1000);
+        const previousRemaining = Math.max(0, device.timerDuration - elapsedSeconds);
+        const newRemainingSeconds = previousRemaining + additionalSeconds;
+        
+        console.log(`⏱️ Timer calculation:`);
+        console.log(`   Previous timerStart: ${timerStartDate.toISOString()}`);
+        console.log(`   Previous timerDuration: ${device.timerDuration}s`);
+        console.log(`   Elapsed since start: ${elapsedSeconds}s`);
+        console.log(`   Previous remaining: ${previousRemaining}s`);
+        console.log(`   Additional: ${additionalSeconds}s`);
+        console.log(`   New remaining: ${newRemainingSeconds}s`);
 
-        // Kirim perintah add time ke device (detik)
-        const result = await sendAddTime({
-            deviceId: device.id,
-            additionalTime: additionalSeconds,
-            useDeposit: useDeposit,
-            transactionId: activeTransaction.id
+        console.log(`⏱️ Updating device ${deviceId}...`);
+        await device.update({ 
+            timerDuration: newRemainingSeconds,  // Simpan REMAINING time, bukan total!
+            timerStart: now                       // Reset timerStart ke NOW
         });
+        console.log(`✅ Device updated: timerDuration=${newRemainingSeconds}s, timerStart=${now.toISOString()}`);
+        console.log(`   → Frontend calculation: NOW + ${newRemainingSeconds}s = end time`);
 
-        if (!result.success) {
-            // Rollback perubahan jika gagal
-            await activeTransaction.update({
-                duration: activeTransaction.duration - additionalSeconds,
-                cost: activeTransaction.cost - incrementalCost
-            });
-            await device.update({ timerDuration: device.timerDuration - additionalSeconds });
-            if (activeTransaction.memberId && useDeposit && previousDeposit !== null) {
-                const member = await Member.findByPk(activeTransaction.memberId);
-                if (member) await member.update({ deposit: previousDeposit });
-            }
-            return res.status(500).json({ message: `Gagal mengirim perintah ke device: ${result.message}` });
-        }
-
+        // Notify clients (WebSocket disabled, so no-op)
         notifyMobileClients({
             type: 'transaction_time_modified',
             transactionId: activeTransaction.id,
             deviceId: device.id,
-            additionalTime: additionalTime, // minutes (bisa positif atau negatif)
+            additionalTime: additionalTime,
             newDuration: newDurationSeconds,
             totalCost: totalCost,
             incrementalCost: incrementalCost,
             timestamp: new Date().toISOString()
         });
 
-        // Log aktivitas penambahan/pengurangan waktu
-        const paymentMethod = (activeTransaction.memberId && useDeposit) ? 'deposit' : 'cash';
-        const memberBalanceInfo = (activeTransaction.memberId && useDeposit && previousDeposit !== null) ? {
-            previousBalance: previousDeposit,
-            newBalance: previousDeposit - incrementalCost
-        } : null;
+        // Log ke TransactionActivities (skip jika dari offline sync untuk mencegah double logging)
+        if (!skipActivityLog) {
+            try {
+                const paymentMethod = activeTransaction.memberId && useDeposit ? 'deposit' : 'cash';
+                const memberBalanceInfo = memberData ? {
+                    previousBalance: memberData.previousDeposit,
+                    newBalance: memberData.newDeposit
+                } : null;
+                
+                await logAddTime(
+                    activeTransaction.id,
+                    additionalSeconds,
+                    incrementalCost,
+                    paymentMethod,
+                    memberBalanceInfo
+                );
+                console.log(`📝 Activity logged: add_time for transaction ${activeTransaction.id}`);
+            } catch (logError) {
+                console.error('⚠️ Failed to log add_time activity:', logError.message);
+                // Jangan gagalkan request jika logging gagal
+            }
+        } else {
+            console.log(`⏭️ Activity log skipped (offline sync will handle it)`);
+        }
 
-        await logAddTime(
-            activeTransaction.id, 
-            additionalSeconds, 
-            incrementalCost, 
-            paymentMethod, 
-            memberBalanceInfo
-        );
-
-        const actionText = additionalTime > 0 ? 'menambah' : 'mengurangi';
-        const timeText = Math.abs(additionalTime);
-
+        console.log(`✅ ADD TIME completed successfully`);
+        
         return res.status(200).json({
-            message: `Berhasil ${actionText} waktu ${timeText} menit ${additionalTime > 0 ? 'ke' : 'dari'} device`,
+            message: `Berhasil menambah waktu ${additionalTime} menit`,
             data: {
                 transaction: {
                     id: activeTransaction.id,
-                    deviceId: activeTransaction.deviceId,
                     duration: newDurationSeconds,
-                    cost: totalCost,
-                    start: activeTransaction.start,
-                    end: activeTransaction.end,
-                    incrementalCost
+                    cost: totalCost
                 },
                 device: {
                     id: device.id,
-                    name: device.name,
-                    timerStatus: device.timerStatus,
-                    timerDuration: device.timerDuration
+                    timerDuration: newDurationSeconds,
+                    timerStart: now
                 },
-                modifiedTimeMinutes: additionalTime,
                 member: memberData
             }
         });
+        
     } catch (error) {
-        console.error('Modify time transaction error:', error);
-        return res.status(500).json({ message: error.message });
+        console.error('❌ ADD TIME ERROR:', error.message);
+        console.error('❌ Stack:', error.stack);
+        return res.status(500).json({ 
+            message: error.message,
+            error: error.stack
+        });
+    }
+};
+
+/**
+ * Sync offline activities untuk device
+ * Endpoint untuk batch sync aktivitas yang dilakukan saat offline
+ */
+const syncDeviceActivities = async (req, res) => {
+    const { deviceId } = req.params;
+    const { activities } = req.body;
+
+    console.log('📥 SYNC OFFLINE ACTIVITIES request:', { deviceId, activitiesCount: activities?.length });
+
+    try {
+        // Validasi input
+        if (!activities || !Array.isArray(activities) || activities.length === 0) {
+            return res.status(400).json({
+                message: 'Activities array is required'
+            });
+        }
+
+        // Cari device
+        const device = await Device.findByPk(deviceId);
+        if (!device) {
+            return res.status(404).json({
+                message: 'Device tidak ditemukan'
+            });
+        }
+
+        // Cari transaksi aktif ATAU transaksi terakhir untuk device ini
+        let transaction = await Transaction.findOne({
+            where: {
+                deviceId: deviceId,
+                end: null
+            },
+            order: [['createdAt', 'DESC']]
+        });
+
+        // Jika tidak ada transaksi aktif, cari transaksi terakhir
+        // (untuk kasus offline sync setelah transaksi sudah selesai)
+        if (!transaction) {
+            transaction = await Transaction.findOne({
+                where: { deviceId: deviceId },
+                order: [['createdAt', 'DESC']]
+            });
+        }
+
+        if (!transaction) {
+            return res.status(404).json({
+                message: 'Tidak ada transaksi untuk device ini'
+            });
+        }
+
+        // Sync activities
+        const results = await syncOfflineActivities(transaction.id, activities);
+
+        // Hitung sukses/gagal
+        const successCount = results.filter(r => r.success).length;
+        const failedCount = results.filter(r => !r.success).length;
+
+        return res.status(200).json({
+            message: `Synced ${successCount}/${activities.length} activities`,
+            data: {
+                transactionId: transaction.id,
+                totalActivities: activities.length,
+                successCount,
+                failedCount,
+                results
+            }
+        });
+
+    } catch (error) {
+        console.error('Error syncing offline activities:', error);
+        return res.status(500).json({
+            message: 'Terjadi kesalahan saat sync aktivitas',
+            error: error.message
+        });
     }
 };
 
@@ -896,5 +1032,6 @@ module.exports = {
     updateDevice,
     deleteDevice,
     sendDeviceCommand,
-    addTime
+    addTime,
+    syncDeviceActivities
 }

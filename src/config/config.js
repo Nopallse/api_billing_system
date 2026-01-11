@@ -8,7 +8,12 @@ module.exports = {
     host: process.env.DB_HOST,
     dialect: process.env.DB_DIALECT,
     port: process.env.DB_PORT,
-    timezone: '+07:00'
+    timezone: '+07:00',
+    dialectOptions: {
+      timezone: '+07:00',
+      dateStrings: true,
+      typeCast: true
+    }
   },
   test: {
     username: process.env.DB_USERNAME || 'root',

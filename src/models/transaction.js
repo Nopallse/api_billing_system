@@ -37,8 +37,8 @@ module.exports = (sequelize, DataTypes) => {
     },
     deviceId: DataTypes.UUID,
     memberId: DataTypes.UUID,
-    start: DataTypes.TIME,
-    end: DataTypes.TIME,
+    start: DataTypes.DATE,  // DATETIME untuk handle lintas hari (e.g. 11PM - 2AM)
+    end: DataTypes.DATE,    // DATETIME untuk handle lintas hari
     duration: DataTypes.INTEGER,
     cost: DataTypes.INTEGER,
     isMemberTransaction: {

@@ -1,4 +1,7 @@
-const wsClient = require('../wsClient');
+// WebSocket DISABLED - Stub untuk backward compatibility
+const wsClient = {
+    getConnectionStatus: () => ({ devices: [], totalDevices: 0 })
+};
 const { Device } = require('../models');
 //import Op from sequelize
 const { Op } = require('sequelize');

@@ -232,6 +232,73 @@ const getTransactionSummary = async (transactionId) => {
     }
 };
 
+/**
+ * Batch sync offline activities
+ * Untuk handle aktivitas yang dilakukan saat offline
+ * @param {string} transactionId - ID transaksi
+ * @param {Array} activities - Array of offline activities
+ * Format: [{ activityType, timestamp, params }]
+ */
+const syncOfflineActivities = async (transactionId, activities) => {
+    const results = [];
+    
+    try {
+        console.log(`📥 Syncing ${activities.length} offline activities for transaction ${transactionId}`);
+        
+        // Sort by timestamp to ensure correct order
+        const sortedActivities = [...activities].sort((a, b) => 
+            new Date(a.timestamp) - new Date(b.timestamp)
+        );
+        
+        for (const activity of sortedActivities) {
+            try {
+                const { activityType, timestamp, params = {} } = activity;
+                
+                // Create activity with original timestamp
+                const loggedActivity = await TransactionActivity.create({
+                    transactionId,
+                    activityType,
+                    description: params.description || `Offline ${activityType}`,
+                    durationAdded: params.durationAdded || null,
+                    costAdded: params.costAdded || null,
+                    paymentMethod: params.paymentMethod || null,
+                    previousBalance: params.previousBalance || null,
+                    newBalance: params.newBalance || null,
+                    deviceStatus: params.deviceStatus || null,
+                    metadata: {
+                        ...params.metadata,
+                        syncedFromOffline: true,
+                        originalTimestamp: timestamp,
+                        syncedAt: new Date().toISOString()
+                    },
+                    timestamp: new Date(timestamp) // Use original timestamp
+                });
+                
+                results.push({
+                    success: true,
+                    activityId: loggedActivity.id,
+                    activityType
+                });
+                
+                console.log(`  ✅ Synced: ${activityType} at ${timestamp}`);
+            } catch (error) {
+                results.push({
+                    success: false,
+                    activityType: activity.activityType,
+                    error: error.message
+                });
+                console.error(`  ❌ Failed: ${activity.activityType}:`, error.message);
+            }
+        }
+        
+        console.log(`📊 Sync complete: ${results.filter(r => r.success).length}/${activities.length} succeeded`);
+        return results;
+    } catch (error) {
+        console.error(`Error syncing offline activities:`, error);
+        throw error;
+    }
+};
+
 module.exports = {
     logTransactionActivity,
     logTransactionStart,
@@ -240,5 +307,6 @@ module.exports = {
     logAddTime,
     logTransactionEnd,
     getTransactionActivities,
-    getTransactionSummary
+    getTransactionSummary,
+    syncOfflineActivities
 };

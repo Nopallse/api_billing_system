@@ -7,7 +7,8 @@ const{
     updateDevice, 
     deleteDevice,
     sendDeviceCommand,
-    addTime
+    addTime,
+    syncDeviceActivities
 } = require('../controllers/device.controller');
 
 const{ tokenValidation, verifyAdmin} = require('../middlewares/auth.middleware');
@@ -24,6 +25,9 @@ router.post('/:id/command', tokenValidation, sendDeviceCommand);
 
 // Add time to device (memerlukan auth)
 router.post('/:deviceId/add-time', tokenValidation, addTime);
+
+// Sync offline activities (untuk handle offline scenario)
+router.post('/:deviceId/sync-activities', tokenValidation, syncDeviceActivities);
 
 
 

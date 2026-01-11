@@ -19,8 +19,8 @@ const userRoutes = require('./routes/user.route');
 const memberRoutes = require('./routes/member.route');
 const memberTransactionRoutes = require('./routes/memberTransaction.route');
 
-// Import WebSocket functions
-const { initWebSocketServer, sendToESP32, getConnectionStatus } = require('./wsClient');
+// Import WebSocket functions - DISABLED (Relay control via BLE)
+// const { initWebSocketServer, sendToESP32, getConnectionStatus } = require('./wsClient');
 
 // Load Swagger YAML file
 const swaggerDocument = YAML.load(path.join(__dirname, '../swagger.yaml'));
@@ -58,15 +58,16 @@ app.use('/api/member-transactions', memberTransactionRoutes);
 // ⭐ LANGKAH PENTING: Buat HTTP Server dari Express app
 const server = http.createServer(app);
 
-// ⭐ SEKARANG: Initialize WebSocket dengan HTTP server (bukan Express app)
-initWebSocketServer(server);
+// ⭐ SEKARANG: WebSocket DISABLED - Relay control via BLE langsung dari mobile
+// initWebSocketServer(server);
 
 // ⭐ TERAKHIR: Listen menggunakan HTTP server (bukan app.listen)
 const PORT = process.env.PORT;
 server.listen(PORT, () => {
     console.log(`🚀 Server is running on port ${PORT}`);
     console.log(`📚 API Documentation: http://localhost:${PORT}/api-docs`);
-    console.log(`🔌 WebSocket ready for IoT connections on ws://localhost:${PORT}`);
+    console.log(`🔌 WebSocket DISABLED - Relay control via BLE`);
+    console.log(`📱 Mobile app controls relay directly via Bluetooth`);
 });
 
 // Export untuk testing atau penggunaan lain

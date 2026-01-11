@@ -54,6 +54,11 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true,
       comment: 'Timestamp when timer was last paused'
     },
+    relayNumber: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Relay number for ESP32 BLE control (1-4)'
+    },
     createdAt: DataTypes.DATE,
     updatedAt: DataTypes.DATE
   }, {
