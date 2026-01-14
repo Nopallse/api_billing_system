@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { 
+const {
     createTransaction,
     createRegularTransaction,
     finishRegularTransaction,
@@ -10,6 +10,12 @@ const {
     updateTransaction,
     deleteTransaction,
 } = require("../controllers/transaction.controller");
+const {
+    addProductToTransaction,
+    getTransactionProducts,
+    removeProductFromTransaction,
+    updateTransactionProductQuantity
+} = require("../controllers/transactionProduct.controller");
 const { tokenValidation, verifyAdmin } = require("../middlewares/auth.middleware");
 
 // Create transaction (memerlukan auth)
@@ -22,7 +28,7 @@ router.post("/regular/create", tokenValidation, createRegularTransaction);
 router.post("/regular/finish", tokenValidation, finishRegularTransaction);
 
 // Get all transactions (admin only)
-router.get("/", tokenValidation,  getAllTransactions);
+router.get("/", tokenValidation, getAllTransactions);
 
 // Get transactions by user ID (memerlukan auth)
 router.get("/user/:userId", tokenValidation, getTransactionsByUserId);
@@ -34,15 +40,30 @@ router.get("/:id", tokenValidation, getTransactionById);
 router.put("/:id", tokenValidation, updateTransaction);
 
 // Delete transaction (admin only)
-router.delete("/:id", tokenValidation,  deleteTransaction);
+router.delete("/:id", tokenValidation, deleteTransaction);
 
+// ===============================
+// Transaction Product Routes
+// ===============================
+
+// Add product to transaction
+router.post("/:transactionId/products", tokenValidation, addProductToTransaction);
+
+// Get products in transaction
+router.get("/:transactionId/products", tokenValidation, getTransactionProducts);
+
+// Update product quantity in transaction
+router.put("/:transactionId/products/:productTransactionId", tokenValidation, updateTransactionProductQuantity);
+
+// Remove product from transaction
+router.delete("/:transactionId/products/:productTransactionId", tokenValidation, removeProductFromTransaction);
 
 
 // Debug endpoint untuk melihat semua transaksi (temporary)
 router.get("/debug/all", tokenValidation, async (req, res) => {
     try {
         const { Transaction, Device, Category } = require("../models");
-        
+
         const transactions = await Transaction.findAll({
             include: [{
                 model: Device,
@@ -52,7 +73,7 @@ router.get("/debug/all", tokenValidation, async (req, res) => {
             }],
             order: [['createdAt', 'DESC']]
         });
-        
+
         const simplifiedTransactions = transactions.map(t => ({
             id: t.id,
             deviceId: t.deviceId,
@@ -71,13 +92,13 @@ router.get("/debug/all", tokenValidation, async (req, res) => {
                 lastPausedAt: t.Device?.lastPausedAt
             }
         }));
-        
+
         res.json({
             message: 'All transactions for debugging',
             count: transactions.length,
             data: simplifiedTransactions
         });
-        
+
     } catch (error) {
         console.error('Debug error:', error);
         res.status(500).json({

@@ -18,6 +18,7 @@ const dashboardRoutes = require('./routes/dashboard.route');
 const userRoutes = require('./routes/user.route');
 const memberRoutes = require('./routes/member.route');
 const memberTransactionRoutes = require('./routes/memberTransaction.route');
+const shiftRoutes = require('./routes/shift.route');
 
 // Import WebSocket functions - DISABLED (Relay control via BLE)
 // const { initWebSocketServer, sendToESP32, getConnectionStatus } = require('./wsClient');
@@ -39,7 +40,7 @@ app.use(cors({
 // app.use(cors());
 app.use(bodyParser.json());
 app.use(express.json());
-app.use(express.urlencoded({extended: true}));
+app.use(express.urlencoded({ extended: true }));
 
 // Serve Swagger UI
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
@@ -54,6 +55,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/member', memberRoutes);
 app.use('/api/member-transactions', memberTransactionRoutes);
+app.use('/api/shift', shiftRoutes);
 
 // ⭐ LANGKAH PENTING: Buat HTTP Server dari Express app
 const server = http.createServer(app);

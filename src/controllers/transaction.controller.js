@@ -1,10 +1,11 @@
 // transactionController.js
-const { Transaction, Device, Category, Member } = require("../models");
+const { Transaction, Device, Category, Member, Payment, Product, TransactionProduct } = require("../models");
+const { getAnyActiveShift, createPaymentRecord } = require("./shift.controller");
 // WebSocket DISABLED - Stub functions untuk backward compatibility
 const sendToESP32 = () => ({ success: true });
 const getConnectionStatus = () => ({ devices: [], totalDevices: 0 });
-const onDeviceDisconnect = () => {};
-const notifyMobileClients = () => {};
+const onDeviceDisconnect = () => { };
+const notifyMobileClients = () => { };
 const sendAddTime = () => ({ success: true });
 const sendCommand = () => ({ success: true });
 const { v4: uuidv4 } = require("uuid");
@@ -23,10 +24,10 @@ const {
 
 // Helpers: parse/format local datetime and compute usage from activities
 // Extracted to shared helper file for reuse across controllers
-const { 
-    parseLocalDateTime, 
-    formatLocalDateTime, 
-    computeUsageSecondsFromActivities 
+const {
+  parseLocalDateTime,
+  formatLocalDateTime,
+  computeUsageSecondsFromActivities
 } = require('./transaction.controller.helpers');
 
 const createTransaction = async (req, res) => {
@@ -124,7 +125,23 @@ const createTransaction = async (req, res) => {
       duration,
       cost: cost,
       isMemberTransaction: false,
+      paymentType: "upfront",
+      status: "active",
     });
+
+    // Cek shift aktif dan buat payment record (bayar di awal)
+    const activeShift = await getAnyActiveShift();
+    if (activeShift) {
+      await createPaymentRecord({
+        shiftId: activeShift.id,
+        userId: req.user.id,
+        transactionId: transactionId,
+        amount: cost,
+        type: 'RENTAL',
+        paymentMethod: req.body.paymentMethod || 'CASH',
+        note: `Bayar di awal - Device: ${device.name}`
+      });
+    }
 
     // Log aktivitas start transaksi
     await logTransactionStart(transactionId, deviceId, duration, cost, false, {
@@ -697,6 +714,23 @@ const finishRegularTransaction = async (req, res) => {
       status: "completed",
     });
 
+    // Dapatkan produk dalam transaksi untuk perhitungan total
+    const transactionProducts = await TransactionProduct.findAll({
+      where: {
+        transactionId: updatedTransaction.id
+      },
+      include: [{
+        model: Product,
+        as: 'product'
+      }]
+    });
+
+    // Hitung total produk
+    const productsTotal = transactionProducts.reduce((sum, tp) => sum + tp.subtotal, 0);
+
+    // Hitung grand total (biaya sewa + produk)
+    const grandTotal = totalCost + productsTotal;
+
     console.log("Transaction updated successfully:", {
       id: updatedTransaction.id,
       end: updatedTransaction.end,
@@ -727,6 +761,34 @@ const finishRegularTransaction = async (req, res) => {
       endReason: "user_finish",
     });
 
+    // Buat payment record untuk shift aktif (bayar di akhir)
+    const activeShift = await getAnyActiveShift();
+    if (activeShift) {
+      // Payment untuk rental
+      await createPaymentRecord({
+        shiftId: activeShift.id,
+        userId: userId,
+        transactionId: updatedTransaction.id,
+        amount: totalCost,
+        type: 'RENTAL',
+        paymentMethod: req.body.paymentMethod || 'CASH',
+        note: `Bayar di akhir - Device: ${device.name}`
+      });
+
+      // Payment untuk produk (jika ada)
+      if (productsTotal > 0) {
+        await createPaymentRecord({
+          shiftId: activeShift.id,
+          userId: userId,
+          transactionId: updatedTransaction.id,
+          amount: productsTotal,
+          type: 'FNB',
+          paymentMethod: req.body.paymentMethod || 'CASH',
+          note: `Produk F&B - ${transactionProducts.length} item`
+        });
+      }
+    }
+
     // Notify mobile clients
     notifyMobileClients("device_status_changed", {
       deviceId: deviceId,
@@ -749,6 +811,8 @@ const finishRegularTransaction = async (req, res) => {
           end: updatedTransaction.end,
           duration: updatedTransaction.duration,
           cost: updatedTransaction.cost,
+          productsTotal: productsTotal,
+          grandTotal: grandTotal,
           paymentType: "end",
         },
         receipt: {
@@ -760,7 +824,10 @@ const finishRegularTransaction = async (req, res) => {
           duration: `${Math.floor(duration / 3600)}j ${Math.floor(
             (duration % 3600) / 60
           )}m ${duration % 60}d`,
-          totalCost: totalCost,
+          rentalCost: totalCost,
+          products: transactionProducts,
+          productsTotal: productsTotal,
+          grandTotal: grandTotal
         },
       },
     });

@@ -15,7 +15,7 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'deviceId',
         // as: 'device'
       });
-      
+
       Transaction.belongsTo(models.Member, {
         foreignKey: 'memberId',
         as: 'member'
@@ -26,10 +26,23 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'transactionId',
         as: 'activities'
       });
+
+      // Relasi many-to-many dengan Product melalui TransactionProduct
+      Transaction.belongsToMany(models.Product, {
+        through: models.TransactionProduct,
+        foreignKey: 'transactionId',
+        as: 'products'
+      });
+
+      // Relasi hasMany ke TransactionProduct untuk akses langsung ke junction table
+      Transaction.hasMany(models.TransactionProduct, {
+        foreignKey: 'transactionId',
+        as: 'transactionProducts'
+      });
     }
   }
   Transaction.init({
-        id: {
+    id: {
       type: DataTypes.UUID,
       defaultValue: DataTypes.UUIDV4,
       allowNull: false,
