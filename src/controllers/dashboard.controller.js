@@ -7,10 +7,7 @@ const { Op } = require('sequelize');
 
 const dashboard = async (req, res) => {
     try {
-        // Mendapatkan status koneksi dari semua perangkat
-        const connectionStatus = getConnectionStatus();
-        
-        // Mendapatkan data device dari database
+        // Mendapatkan data device dari database (BLE is source of truth for real-time status)
         const devices = await Device.findAll({
             include: [{
                 model: Category,
@@ -18,30 +15,30 @@ const dashboard = async (req, res) => {
             }]
         });
         
-        // Menghitung total device yang aktif dan tidak aktif
-        const activeDevices = connectionStatus.devices.filter(device => device.status === 'on');
-        const inactiveDevices = connectionStatus.devices.filter(device => device.status === 'off');
-        
-        // Mengambil detail device yang aktif dengan data dari database
-        const activeDevicesDetail = await Promise.all(
-            activeDevices.map(async (device) => {
-                const deviceData = devices.find(d => d.id === device.deviceId);
-                
-                return {
-                    device_id: deviceData?.id,
-                    name: deviceData?.name,
-                    category: deviceData?.Category?.categoryName,
-                    category_cost: deviceData?.Category?.cost,
-                    periode: deviceData?.Category?.periode,
-                    status: device.status,
-                    timer_start: deviceData?.timerStart,
-                    timer_duration: deviceData?.timerDuration,
-                    timer_elapsed: deviceData?.timerElapsed,
-                    timer_status: deviceData?.timerStatus,
-                    last_paused_at: deviceData?.lastPausedAt
-                };
-            })
+        // Filter devices based on database status (updated by BLE or API)
+        // Status: 'on' = running, 'pause' = paused, 'off' = ready/stopped
+        const activeDevices = devices.filter(device => 
+            device.timerStatus === 'start' || device.timerStatus === 'paused'
         );
+        const inactiveDevices = devices.filter(device => 
+            !device.timerStatus || device.timerStatus === 'end'
+        );
+        
+        // Format active devices detail for frontend
+        const activeDevicesDetail = activeDevices.map(device => ({
+            device_id: device.id,
+            name: device.name,
+            category: device.Category?.categoryName,
+            category_cost: device.Category?.cost,
+            periode: device.Category?.periode,
+            status: device.timerStatus === 'start' ? 'on' : (device.timerStatus === 'paused' ? 'pause' : 'off'),
+            timer_start: device.timerStart,
+            timer_duration: device.timerDuration,
+            timer_elapsed: device.timerElapsed,
+            timer_status: device.timerStatus,
+            last_paused_at: device.lastPausedAt,
+            relay_number: device.relayNumber // For BLE integration
+        }));
 
         // Mengambil 5 transaksi terakhir terlebih dahulu
         const lastTransactions = await Transaction.findAll({
@@ -80,6 +77,12 @@ const dashboard = async (req, res) => {
             active_devices: activeDevicesDetail,
             last_used_devices: lastUsedDevicesDetail
         };
+        
+        console.log('📊 Dashboard Summary:', {
+            total_devices: devices.length,
+            active: activeDevices.length,
+            inactive: inactiveDevices.length
+        });
         
         res.status(200).json(response);
     } catch (error) {

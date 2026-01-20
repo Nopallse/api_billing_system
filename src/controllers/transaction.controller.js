@@ -15,6 +15,7 @@ const {
   logTransactionEnd,
   getTransactionActivities,
   getTransactionSummary,
+    logBleDisconnect,
 } = require("../utils/transactionActivityLogger");
 
 // Register disconnect callback untuk semua device - DISABLED (WebSocket removed)
@@ -904,6 +905,56 @@ const finishRegularTransaction = async (req, res) => {
 
 // Fungsi untuk menambah waktu pada transaksi yang sedang aktif
 
+/**
+ * Log BLE disconnect event
+ * POST /api/transactions/:transactionId/log-disconnect
+ */
+const logBleDisconnectEvent = async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    const { disconnectReason, disconnectSource, deviceId } = req.body;
+
+    console.log('📡 BLE DISCONNECT LOG:', { transactionId, disconnectReason, disconnectSource, deviceId });
+
+    // Validasi input
+    if (!disconnectReason || !disconnectSource || !deviceId) {
+      return res.status(400).json({
+        message: 'Missing required fields: disconnectReason, disconnectSource, deviceId'
+      });
+    }
+
+    // Validasi transaksi exists
+    const transaction = await Transaction.findByPk(transactionId);
+    if (!transaction) {
+      return res.status(404).json({
+        message: 'Transaction not found'
+      });
+    }
+
+    // Log disconnect activity
+    const activity = await logBleDisconnect(
+      transactionId,
+      disconnectReason,
+      disconnectSource,
+      deviceId
+    );
+
+    console.log('✅ BLE disconnect logged:', activity.id);
+
+    return res.status(201).json({
+      message: 'BLE disconnect logged successfully',
+      data: activity
+    });
+
+  } catch (error) {
+    console.error('❌ Error logging BLE disconnect:', error);
+    return res.status(500).json({
+      message: 'Error logging BLE disconnect',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   createTransaction,
   createRegularTransaction,
@@ -913,5 +964,6 @@ module.exports = {
   getTransactionsByUserId,
   updateTransaction,
   deleteTransaction,
+  logBleDisconnectEvent,
   // addTime
 };
