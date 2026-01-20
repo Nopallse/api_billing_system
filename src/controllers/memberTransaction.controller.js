@@ -43,6 +43,15 @@ const createMemberTransaction = async (req, res) => {
             });
         }
 
+        // Validasi shift aktif
+        const { getAnyActiveShift } = require('./shift.controller');
+        const activeShift = await getAnyActiveShift();
+        if (!activeShift) {
+            return res.status(400).json({
+                message: 'Tidak dapat memulai transaksi. Shift belum aktif. Silakan mulai shift terlebih dahulu.'
+            });
+        }
+
         // Cek apakah device terdaftar di database
         const device = await Device.findByPk(deviceId);
         if (!device) {

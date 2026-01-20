@@ -2,6 +2,26 @@
 const { Transaction, Product, TransactionProduct } = require("../models");
 const { v4: uuidv4 } = require("uuid");
 
+// Helper function to update transaction total cost
+const updateTransactionCost = async (transactionId) => {
+    const transaction = await Transaction.findByPk(transactionId);
+    if (!transaction) return;
+
+    // Calculate total products cost
+    const transactionProducts = await TransactionProduct.findAll({
+        where: { transactionId }
+    });
+    
+    const productsCost = transactionProducts.reduce((sum, tp) => sum + tp.subtotal, 0);
+    
+    // Update transaction cost (original duration cost + products cost)
+    // Note: Jika transaction memiliki originalCost atau baseCost, gunakan itu
+    // Untuk sekarang, kita asumsikan cost sudah termasuk duration cost
+    await transaction.update({
+        cost: (transaction.cost || 0) + productsCost
+    });
+};
+
 // Fungsi untuk menambahkan produk ke transaksi aktif
 const addProductToTransaction = async (req, res) => {
     try {
@@ -55,6 +75,12 @@ const addProductToTransaction = async (req, res) => {
             quantity: quantity,
             price: product.price, // Simpan harga saat ini untuk riwayat
             subtotal: subtotal
+        });
+
+        // Update transaction total cost
+        const currentCost = transaction.cost || 0;
+        await transaction.update({
+            cost: currentCost + subtotal
         });
 
         // Load product data untuk response
@@ -155,7 +181,16 @@ const removeProductFromTransaction = async (req, res) => {
             });
         }
 
+        // Store subtotal before deleting untuk update transaction cost
+        const removedSubtotal = transactionProduct.subtotal;
+
         await transactionProduct.destroy();
+
+        // Update transaction cost - kurangi subtotal yang dihapus
+        const currentCost = transaction.cost || 0;
+        await transaction.update({
+            cost: Math.max(0, currentCost - removedSubtotal) // Prevent negative cost
+        });
 
         return res.status(200).json({
             message: 'Produk berhasil dihapus dari transaksi'
@@ -215,11 +250,21 @@ const updateTransactionProductQuantity = async (req, res) => {
             });
         }
 
+        // Store old subtotal before updating
+        const oldSubtotal = transactionProduct.subtotal;
+
         // Update quantity dan subtotal
         const newSubtotal = transactionProduct.price * quantity;
         await transactionProduct.update({
             quantity: quantity,
             subtotal: newSubtotal
+        });
+
+        // Update transaction cost - adjust by difference
+        const currentCost = transaction.cost || 0;
+        const costDifference = newSubtotal - oldSubtotal;
+        await transaction.update({
+            cost: currentCost + costDifference
         });
 
         // Reload untuk mendapatkan data terbaru

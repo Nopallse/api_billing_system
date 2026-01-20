@@ -1,4 +1,4 @@
-const{ Device, User, Category, Transaction, Member } = require('../models');
+const{ Device, User, Category, Transaction, Member, TransactionProduct, Product } = require('../models');
 const { v4: uuidv4 } = require('uuid');
 // WebSocket DISABLED - Relay control via BLE
 // Stub functions untuk backward compatibility
@@ -15,6 +15,7 @@ const {
     syncOfflineActivities,
     getTransactionActivities
 } = require('../utils/transactionActivityLogger');
+const { getAnyActiveShift, createPaymentRecord } = require('./shift.controller');
 
 // Import helpers from transaction controller for usage calculation
 const { 
@@ -462,6 +463,16 @@ const sendDeviceCommand = async (req, res) => {
 
         // Handle timer status berdasarkan command
         if (command === 'start') {
+            // Validasi shift aktif - hanya jika bukan resume dari pause
+            if (device.timerStatus !== 'stop' && !device.lastPausedAt) {
+                const activeShift = await getAnyActiveShift();
+                if (!activeShift) {
+                    return res.status(400).json({
+                        message: 'Tidak dapat memulai transaksi. Shift belum aktif. Silakan mulai shift terlebih dahulu.'
+                    });
+                }
+            }
+            
             // Cari transaksi aktif untuk logging
             const activeTransactionForResume = await Transaction.findOne({
                 where: { 
@@ -536,7 +547,7 @@ const sendDeviceCommand = async (req, res) => {
 
                 // Log aktivitas stop (skip jika dari offline sync)
                 if (activeTransaction && !skipActivityLog) {
-                    await logTransactionStop(activeTransaction.id, elapsedTime, 'manual_stop');
+                    await logTransactionStop(activeTransaction.id, 'manual_stop');
                     console.log(`📝 Activity logged: stop for transaction ${activeTransaction.id}`);
                 } else if (skipActivityLog) {
                     console.log(`⏭️ Stop activity log skipped (offline sync will handle it)`);
@@ -680,6 +691,37 @@ const sendDeviceCommand = async (req, res) => {
                     refundInfo
                 );
                 console.log(`📝 Activity logged: end for transaction ${activeTransaction.id} with usedTime=${realUsedTime}s`);
+                
+                // Untuk transaksi bayar di awal (upfront), cek apakah ada produk yang perlu dibayar
+                if (activeTransaction.paymentType === 'upfront') {
+                    // Ambil semua produk dalam transaksi
+                    const transactionProducts = await TransactionProduct.findAll({
+                        where: { transactionId: activeTransaction.id },
+                        include: [{ model: Product, as: 'product' }]
+                    });
+                    
+                    if (transactionProducts.length > 0) {
+                        // Hitung total produk
+                        const productsTotal = transactionProducts.reduce((sum, tp) => sum + tp.subtotal, 0);
+                        
+                        if (productsTotal > 0) {
+                            // Buat payment record untuk produk
+                            const activeShift = await getAnyActiveShift();
+                            if (activeShift) {
+                                await createPaymentRecord({
+                                    shiftId: activeShift.id,
+                                    userId: req.user.id,
+                                    transactionId: activeTransaction.id,
+                                    amount: productsTotal,
+                                    type: 'FNB',
+                                    paymentMethod: 'CASH',
+                                    note: `Produk F&B - ${transactionProducts.length} item`
+                                });
+                                console.log(`💰 Payment record created for products: Rp${productsTotal} (${transactionProducts.length} items)`);
+                            }
+                        }
+                    }
+                }
             } else if (skipActivityLog) {
                 console.log(`⏭️ End activity log skipped (offline sync will handle it)`);
             }

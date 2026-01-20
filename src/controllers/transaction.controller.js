@@ -53,6 +53,14 @@ const createTransaction = async (req, res) => {
     // Mobile app akan mengirim perintah langsung ke ESP32 via BLE
     // Backend hanya menyimpan data transaksi
 
+    // Validasi shift aktif
+    const activeShift = await getAnyActiveShift();
+    if (!activeShift) {
+      return res.status(400).json({
+        message: "Tidak dapat memulai transaksi. Shift belum aktif. Silakan mulai shift terlebih dahulu.",
+      });
+    }
+
     // Cek apakah device sudah memiliki transaksi aktif di database
     const existingTransaction = await Transaction.findOne({
       where: {
@@ -129,8 +137,6 @@ const createTransaction = async (req, res) => {
       status: "active",
     });
 
-    // Cek shift aktif dan buat payment record (bayar di awal)
-    const activeShift = await getAnyActiveShift();
     if (activeShift) {
       await createPaymentRecord({
         shiftId: activeShift.id,
@@ -197,6 +203,14 @@ const createRegularTransaction = async (req, res) => {
 
     // NOTE: Tidak perlu cek WebSocket lagi karena relay control sekarang via BLE
     // Mobile app akan mengirim perintah langsung ke ESP32 via BLE
+
+    // Validasi shift aktif
+    const activeShift = await getAnyActiveShift();
+    if (!activeShift) {
+      return res.status(400).json({
+        message: "Tidak dapat memulai transaksi. Shift belum aktif. Silakan mulai shift terlebih dahulu.",
+      });
+    }
 
     // Cek apakah device sedang digunakan
     if (device.timerStatus === "start") {
@@ -281,7 +295,8 @@ const createRegularTransaction = async (req, res) => {
 
 const getAllTransactions = async (req, res) => {
   try {
-    const { start_date, end_date, page = 1, limit = 10 } = req.query;
+    const { start_date, end_date, page = 1, limit = 10, activeShiftOnly } = req.query;
+    const userId = req.user.id;
 
     // Validasi format tanggal
     const startDate = start_date ? new Date(start_date) : null;
@@ -303,6 +318,38 @@ const getAllTransactions = async (req, res) => {
 
     // Konfigurasi where clause
     const whereClause = {};
+    
+    // Filter by active shift if requested
+    if (activeShiftOnly === 'true') {
+      const activeShift = await getAnyActiveShift();
+      if (activeShift) {
+        // Get all payment transaction IDs from this shift
+        const shiftPayments = await Payment.findAll({
+          where: { shiftId: activeShift.id },
+          attributes: ['transactionId']
+        });
+        
+        const transactionIds = shiftPayments
+          .map(p => p.transactionId)
+          .filter(id => id !== null);
+        
+        if (transactionIds.length > 0) {
+          whereClause.id = {
+            [Op.in]: transactionIds
+          };
+        } else {
+          // No transactions in this shift yet
+          whereClause.id = {
+            [Op.in]: [] // Empty result
+          };
+        }
+      } else {
+        // No active shift, return empty (will be handled by frontend to show all)
+        whereClause.id = {
+          [Op.in]: [] // Empty result
+        };
+      }
+    }
     if (startDate && endDate) {
       // Jika tanggal sama, set waktu end_date ke akhir hari
       if (startDate.toDateString() === endDate.toDateString()) {
@@ -399,6 +446,18 @@ const getTransactionById = async (req, res) => {
           attributes: ["id", "username", "email", "deposit"],
           required: false,
         },
+        {
+          model: TransactionProduct,
+          as: "transactionProducts",
+          include: [
+            {
+              model: Product,
+              as: "product",
+              attributes: ["id", "name", "description", "price"]
+            }
+          ],
+          required: false
+        }
       ],
     });
 

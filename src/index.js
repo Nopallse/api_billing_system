@@ -19,6 +19,7 @@ const userRoutes = require('./routes/user.route');
 const memberRoutes = require('./routes/member.route');
 const memberTransactionRoutes = require('./routes/memberTransaction.route');
 const shiftRoutes = require('./routes/shift.route');
+const productRoutes = require('./routes/product.route');
 
 // Import WebSocket functions - DISABLED (Relay control via BLE)
 // const { initWebSocketServer, sendToESP32, getConnectionStatus } = require('./wsClient');
@@ -56,6 +57,7 @@ app.use('/api/user', userRoutes);
 app.use('/api/member', memberRoutes);
 app.use('/api/member-transactions', memberTransactionRoutes);
 app.use('/api/shift', shiftRoutes);
+app.use('/api/product', productRoutes);
 
 // ⭐ LANGKAH PENTING: Buat HTTP Server dari Express app
 const server = http.createServer(app);
