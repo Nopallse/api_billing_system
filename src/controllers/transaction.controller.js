@@ -753,30 +753,12 @@ const finishRegularTransaction = async (req, res) => {
     const periodMinutes = device.Category ? device.Category.periode : 60;
     const totalMinutes = Math.ceil(duration / 60); // Round up ke menit terdekat
     const periods = Math.ceil(totalMinutes / periodMinutes);
-    const totalCost = periods * costPerMinute;
+    const durationCost = periods * costPerMinute; // Biaya rental saja
 
-    // Gunakan Date object langsung untuk kolom DATETIME
-
-    // Update transaksi
-    console.log("Updating transaction with:", {
-      transactionId: activeTransaction.id,
-      endTime: endTime,
-      duration: duration,
-      cost: totalCost,
-      status: "completed",
-    });
-
-    const updatedTransaction = await activeTransaction.update({
-      end: endTime, // DATETIME object
-      duration: duration,
-      cost: totalCost,
-      status: "completed",
-    });
-
-    // Dapatkan produk dalam transaksi untuk perhitungan total
+    // Dapatkan produk dalam transaksi SEBELUM update
     const transactionProducts = await TransactionProduct.findAll({
       where: {
-        transactionId: updatedTransaction.id
+        transactionId: activeTransaction.id
       },
       include: [{
         model: Product,
@@ -787,8 +769,28 @@ const finishRegularTransaction = async (req, res) => {
     // Hitung total produk
     const productsTotal = transactionProducts.reduce((sum, tp) => sum + tp.subtotal, 0);
 
-    // Hitung grand total (biaya sewa + produk)
-    const grandTotal = totalCost + productsTotal;
+    // Total cost = durasi + produk
+    const totalCost = durationCost + productsTotal;
+
+    // Gunakan Date object langsung untuk kolom DATETIME
+
+    // Update transaksi
+    console.log("Updating transaction with:", {
+      transactionId: activeTransaction.id,
+      endTime: endTime,
+      duration: duration,
+      durationCost: durationCost,
+      productsTotal: productsTotal,
+      totalCost: totalCost,
+      status: "completed",
+    });
+
+    const updatedTransaction = await activeTransaction.update({
+      end: endTime, // DATETIME object
+      duration: duration,
+      cost: totalCost, // Total biaya (rental + produk)
+      status: "completed",
+    });
 
     console.log("Transaction updated successfully:", {
       id: updatedTransaction.id,
@@ -828,7 +830,7 @@ const finishRegularTransaction = async (req, res) => {
         shiftId: activeShift.id,
         userId: userId,
         transactionId: updatedTransaction.id,
-        amount: totalCost,
+        amount: durationCost, // Hanya biaya rental
         type: 'RENTAL',
         paymentMethod: req.body.paymentMethod || 'CASH',
         note: `Bayar di akhir - Device: ${device.name}`
@@ -870,8 +872,9 @@ const finishRegularTransaction = async (req, res) => {
           end: updatedTransaction.end,
           duration: updatedTransaction.duration,
           cost: updatedTransaction.cost,
+          durationCost: durationCost,
           productsTotal: productsTotal,
-          grandTotal: grandTotal,
+          grandTotal: totalCost, // Sama dengan cost
           paymentType: "end",
         },
         receipt: {
@@ -883,10 +886,10 @@ const finishRegularTransaction = async (req, res) => {
           duration: `${Math.floor(duration / 3600)}j ${Math.floor(
             (duration % 3600) / 60
           )}m ${duration % 60}d`,
-          rentalCost: totalCost,
+          rentalCost: durationCost,
           products: transactionProducts,
           productsTotal: productsTotal,
-          grandTotal: grandTotal
+          grandTotal: totalCost
         },
       },
     });

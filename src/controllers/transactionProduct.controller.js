@@ -77,11 +77,17 @@ const addProductToTransaction = async (req, res) => {
             subtotal: subtotal
         });
 
-        // Update transaction total cost
-        const currentCost = transaction.cost || 0;
-        await transaction.update({
-            cost: currentCost + subtotal
-        });
+        // JANGAN update transaction.cost di sini untuk transaksi bayar di akhir
+        // Transaction.cost akan dihitung saat finish transaction
+        // Yang mencakup: rental cost + semua products cost
+        // Untuk transaksi upfront (bayar di awal), cost sudah fix di awal
+        if (transaction.paymentType !== 'end') {
+            // Hanya untuk transaksi upfront, tambahkan product cost ke transaction.cost
+            const currentCost = transaction.cost || 0;
+            await transaction.update({
+                cost: currentCost + subtotal
+            });
+        }
 
         // Load product data untuk response
         await transactionProduct.reload({
@@ -187,10 +193,13 @@ const removeProductFromTransaction = async (req, res) => {
         await transactionProduct.destroy();
 
         // Update transaction cost - kurangi subtotal yang dihapus
-        const currentCost = transaction.cost || 0;
-        await transaction.update({
-            cost: Math.max(0, currentCost - removedSubtotal) // Prevent negative cost
-        });
+        // Hanya untuk transaksi upfront (paymentType !== 'end')
+        if (transaction.paymentType !== 'end') {
+            const currentCost = transaction.cost || 0;
+            await transaction.update({
+                cost: Math.max(0, currentCost - removedSubtotal) // Prevent negative cost
+            });
+        }
 
         return res.status(200).json({
             message: 'Produk berhasil dihapus dari transaksi'
@@ -261,11 +270,14 @@ const updateTransactionProductQuantity = async (req, res) => {
         });
 
         // Update transaction cost - adjust by difference
-        const currentCost = transaction.cost || 0;
-        const costDifference = newSubtotal - oldSubtotal;
-        await transaction.update({
-            cost: currentCost + costDifference
-        });
+        // Hanya untuk transaksi upfront (paymentType !== 'end')
+        if (transaction.paymentType !== 'end') {
+            const currentCost = transaction.cost || 0;
+            const costDifference = newSubtotal - oldSubtotal;
+            await transaction.update({
+                cost: currentCost + costDifference
+            });
+        }
 
         // Reload untuk mendapatkan data terbaru
         await transactionProduct.reload({
