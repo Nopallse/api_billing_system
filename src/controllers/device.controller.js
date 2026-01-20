@@ -276,6 +276,7 @@ const getAllDevices = async (req, res) => {
                     duration: activeTransaction.duration,
                     cost: activeTransaction.cost,
                     isMemberTransaction: isMemberTransaction,
+                    paymentType: activeTransaction.paymentType || 'upfront', // Add paymentType for unlimited mode detection
                     member: activeTransaction.member || null
                 } : null
             };
@@ -377,6 +378,7 @@ const getDeviceById = async (req, res) => {
                 duration: activeTransaction.duration,
                 cost: activeTransaction.cost,
                 isMemberTransaction: isMemberTransaction,
+                paymentType: activeTransaction.paymentType || 'upfront', // Add paymentType for unlimited mode detection
                 member: activeTransaction.member || null
             } : null
         };
@@ -524,25 +526,29 @@ const sendDeviceCommand = async (req, res) => {
             }
         } else if (command === 'stop') {
             if (device.timerStatus === 'start') {
-                // Hitung elapsed time dan sisa waktu
-                const elapsedTime = Math.floor((now - device.timerStart) / 1000);
-                const remainingTime = Math.max(0, device.timerDuration - elapsedTime);
-                
-                // PENTING: Update timerDuration dengan SISA WAKTU untuk frozen countdown
-                await device.update({
-                    timerStatus: 'stop',
-                    timerElapsed: elapsedTime,
-                    timerDuration: remainingTime, // Simpan sisa waktu
-                    lastPausedAt: now
-                });
-
-                // Cari transaksi aktif untuk logging
-                const activeTransaction = await Transaction.findOne({
+                // Cari transaksi aktif untuk cek payment type
+                activeTransaction = await Transaction.findOne({
                     where: { 
                         deviceId: id, 
                         end: null 
                     },
                     order: [['createdAt', 'DESC']]
+                });
+
+                // Hitung elapsed time dan sisa waktu
+                const elapsedTime = Math.floor((now - device.timerStart) / 1000);
+                const remainingTime = Math.max(0, device.timerDuration - elapsedTime);
+                
+                // PENTING: Untuk unlimited mode (bayar di akhir), timerDuration harus tetap NULL
+                // Untuk timed mode, simpan sisa waktu di timerDuration
+                const isUnlimitedTransaction = activeTransaction && activeTransaction.paymentType === 'end';
+                const newTimerDuration = isUnlimitedTransaction ? null : remainingTime;
+                
+                await device.update({
+                    timerStatus: 'stop',
+                    timerElapsed: elapsedTime,
+                    timerDuration: newTimerDuration, // null untuk unlimited, sisa waktu untuk timed
+                    lastPausedAt: now
                 });
 
                 // Log aktivitas stop (skip jika dari offline sync)
@@ -656,15 +662,29 @@ const sendDeviceCommand = async (req, res) => {
                 console.log(`- Transaction ID:`, activeTransaction.id);
                 console.log(`- end value (DATETIME):`, endDateTime);
                 console.log(`- duration:`, usedTime);
-                console.log(`- cost:`, activeTransaction.cost);
+                console.log(`- paymentType:`, activeTransaction.paymentType);
+                console.log(`- original cost:`, activeTransaction.cost);
+                
+                // Calculate cost for "bayar di akhir" (paymentType = 'end') transactions
+                let finalCost = activeTransaction.cost;
+                if (activeTransaction.paymentType === 'end') {
+                    // Hitung cost berdasarkan durasi yang digunakan
+                    const category = await Category.findByPk(device.categoryId);
+                    if (category) {
+                        const { calculateCost } = require('../utils/cost');
+                        finalCost = calculateCost(usedTime, category);
+                        console.log(`💰 Calculated cost for pay-at-end transaction: Rp${finalCost} for ${usedTime}s`);
+                    }
+                }
                 
                 await activeTransaction.update({
                     end: endDateTime, // DATETIME object
                     duration: usedTime,
+                    cost: finalCost, // Update cost (calculated for pay-at-end, unchanged for upfront)
                     status: 'completed' // Mark as completed
                 });
                 
-                console.log(`✅ Regular transaction updated - Duration: ${usedTime}s, End: ${endDateTime.toISOString()}, Status: completed`);
+                console.log(`✅ Regular transaction updated - Final cost: Rp${finalCost}, Duration: ${usedTime}s, End: ${endDateTime.toISOString()}, Status: completed`);
             }
             
             // Reset semua status timer
@@ -692,34 +712,66 @@ const sendDeviceCommand = async (req, res) => {
                 );
                 console.log(`📝 Activity logged: end for transaction ${activeTransaction.id} with usedTime=${realUsedTime}s`);
                 
+                // Ambil semua produk dalam transaksi
+                const transactionProducts = await TransactionProduct.findAll({
+                    where: { transactionId: activeTransaction.id },
+                    include: [{ model: Product, as: 'product' }]
+                });
+                
+                const productsTotal = transactionProducts.reduce((sum, tp) => sum + tp.subtotal, 0);
+                const activeShift = await getAnyActiveShift();
+                
                 // Untuk transaksi bayar di awal (upfront), cek apakah ada produk yang perlu dibayar
                 if (activeTransaction.paymentType === 'upfront') {
-                    // Ambil semua produk dalam transaksi
-                    const transactionProducts = await TransactionProduct.findAll({
-                        where: { transactionId: activeTransaction.id },
-                        include: [{ model: Product, as: 'product' }]
-                    });
-                    
-                    if (transactionProducts.length > 0) {
-                        // Hitung total produk
-                        const productsTotal = transactionProducts.reduce((sum, tp) => sum + tp.subtotal, 0);
+                    if (productsTotal > 0 && activeShift) {
+                        // Buat payment record untuk produk saja (biaya main sudah dibayar di awal)
+                        await createPaymentRecord({
+                            shiftId: activeShift.id,
+                            userId: req.user.id,
+                            transactionId: activeTransaction.id,
+                            amount: productsTotal,
+                            type: 'FNB',
+                            paymentMethod: 'CASH',
+                            note: `Produk F&B - ${transactionProducts.length} item`
+                        });
+                        console.log(`💰 Payment record created for products: Rp${productsTotal} (${transactionProducts.length} items)`);
+                    }
+                }
+                // Untuk transaksi bayar di akhir (end), buat payment record untuk biaya main + produk
+                else if (activeTransaction.paymentType === 'end') {
+                    if (activeShift) {
+                        const playCost = activeTransaction.cost || 0;
+                        const totalAmount = playCost + productsTotal;
                         
-                        if (productsTotal > 0) {
-                            // Buat payment record untuk produk
-                            const activeShift = await getAnyActiveShift();
-                            if (activeShift) {
-                                await createPaymentRecord({
-                                    shiftId: activeShift.id,
-                                    userId: req.user.id,
-                                    transactionId: activeTransaction.id,
-                                    amount: productsTotal,
-                                    type: 'FNB',
-                                    paymentMethod: 'CASH',
-                                    note: `Produk F&B - ${transactionProducts.length} item`
-                                });
-                                console.log(`💰 Payment record created for products: Rp${productsTotal} (${transactionProducts.length} items)`);
-                            }
+                        // Buat payment record untuk biaya main
+                        if (playCost > 0) {
+                            await createPaymentRecord({
+                                shiftId: activeShift.id,
+                                userId: req.user.id,
+                                transactionId: activeTransaction.id,
+                                amount: playCost,
+                                type: 'RENTAL',
+                                paymentMethod: 'CASH',
+                                note: `Bayar di akhir - ${Math.floor(realUsedTime / 60)} menit`
+                            });
+                            console.log(`💰 Payment record created for play cost (pay-at-end): Rp${playCost}`);
                         }
+                        
+                        // Buat payment record untuk produk jika ada
+                        if (productsTotal > 0) {
+                            await createPaymentRecord({
+                                shiftId: activeShift.id,
+                                userId: req.user.id,
+                                transactionId: activeTransaction.id,
+                                amount: productsTotal,
+                                type: 'FNB',
+                                paymentMethod: 'CASH',
+                                note: `Produk F&B - ${transactionProducts.length} item`
+                            });
+                            console.log(`💰 Payment record created for products: Rp${productsTotal} (${transactionProducts.length} items)`);
+                        }
+                        
+                        console.log(`💵 Total payment for pay-at-end transaction: Rp${totalAmount} (play: ${playCost}, products: ${productsTotal})`);
                     }
                 }
             } else if (skipActivityLog) {
