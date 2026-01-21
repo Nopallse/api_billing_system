@@ -904,6 +904,275 @@ const finishRegularTransaction = async (req, res) => {
 
 // Fungsi untuk menambah waktu pada transaksi yang sedang aktif
 
+// Helper: Get local date string (YYYY-MM-DD) from Date object
+// Uses server's local timezone (e.g., Asia/Jakarta)
+const getLocalDateString = (date) => {
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Mendapatkan summary transaksi per tanggal (langsung dari tabel Transaction)
+const getTransactionSummaryByDate = async (req, res) => {
+  try {
+    const { page = 1, limit = 10, start_date, end_date } = req.query;
+
+    // Build where clause
+    const whereClause = {
+      status: 'completed' // Hanya transaksi yang selesai
+    };
+
+    if (start_date && end_date) {
+      // Create local date boundaries using server's local timezone
+      // Parse YYYY-MM-DD and create Date object in local timezone
+      const [startYear, startMonth, startDay] = start_date.split('-').map(Number);
+      const [endYear, endMonth, endDay] = end_date.split('-').map(Number);
+      
+      const startOfDay = new Date(startYear, startMonth - 1, startDay, 0, 0, 0, 0);
+      const endOfDay = new Date(endYear, endMonth - 1, endDay, 23, 59, 59, 999);
+      
+      whereClause.start = {
+        [Op.between]: [startOfDay, endOfDay]
+      };
+    } else if (start_date) {
+      const [year, month, day] = start_date.split('-').map(Number);
+      const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
+      whereClause.start = {
+        [Op.gte]: startOfDay
+      };
+    } else if (end_date) {
+      const [year, month, day] = end_date.split('-').map(Number);
+      const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
+      whereClause.start = {
+        [Op.lte]: endOfDay
+      };
+    }
+
+    // Get all transactions with products
+    const transactions = await Transaction.findAll({
+      where: whereClause,
+      include: [
+        {
+          model: Device,
+          include: [{ model: Category }]
+        },
+        {
+          model: TransactionProduct,
+          as: 'transactionProducts',
+          include: [{
+            model: Product,
+            as: 'product'
+          }],
+          required: false
+        }
+      ],
+      order: [['start', 'DESC']]
+    });
+
+    // Group by LOCAL date and calculate summary
+    const dateMap = new Map();
+
+    transactions.forEach(transaction => {
+      const txData = transaction.toJSON();
+      // Use LOCAL date of the transaction (server timezone)
+      const dateKey = getLocalDateString(txData.start);
+
+      if (!dateMap.has(dateKey)) {
+        dateMap.set(dateKey, {
+          date: dateKey,
+          pendapatanDevice: 0,
+          pendapatanCafe: 0,
+          totalPendapatan: 0,
+          transactionCount: 0
+        });
+      }
+
+      const dateSummary = dateMap.get(dateKey);
+      dateSummary.transactionCount += 1;
+
+      // Calculate rental cost (device)
+      // If transaction has products, rental cost = total cost - products total
+      const productsTotal = txData.transactionProducts 
+        ? txData.transactionProducts.reduce((sum, tp) => sum + (tp.subtotal || 0), 0)
+        : 0;
+      
+      const rentalCost = (txData.cost || 0) - productsTotal;
+
+      dateSummary.pendapatanDevice += rentalCost > 0 ? rentalCost : 0;
+      dateSummary.pendapatanCafe += productsTotal;
+      dateSummary.totalPendapatan += txData.cost || 0;
+    });
+
+    // Convert map to array and sort by date descending
+    const allDates = Array.from(dateMap.values()).sort((a, b) => 
+      new Date(b.date).getTime() - new Date(a.date).getTime()
+    );
+
+    // Apply pagination
+    const totalItems = allDates.length;
+    const totalPages = Math.ceil(totalItems / limit);
+    const offset = (page - 1) * parseInt(limit);
+    const paginatedDates = allDates.slice(offset, offset + parseInt(limit));
+
+    return res.status(200).json({
+      message: 'Success',
+      data: {
+        summaries: paginatedDates,
+        pagination: {
+          totalItems,
+          totalPages,
+          currentPage: parseInt(page),
+          itemsPerPage: parseInt(limit)
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error getting transaction summary by date:', error);
+    return res.status(500).json({
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+};
+
+// Mendapatkan transaksi berdasarkan tanggal tertentu (menggunakan waktu lokal)
+const getTransactionsByDate = async (req, res) => {
+  try {
+    const { date, page = 1, limit = 10 } = req.query;
+
+    if (!date) {
+      return res.status(400).json({
+        message: 'Parameter date wajib diisi (format: YYYY-MM-DD)'
+      });
+    }
+
+    // Parse date - create local date boundaries using server's local timezone
+    // The date parameter is in YYYY-MM-DD format (local date)
+    const [year, month, day] = date.split('-').map(Number);
+    const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
+    const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
+
+    const whereClause = {
+      status: 'completed',
+      start: {
+        [Op.between]: [startOfDay, endOfDay]
+      }
+    };
+
+    const offset = (page - 1) * parseInt(limit);
+
+    const { count, rows: transactions } = await Transaction.findAndCountAll({
+      where: whereClause,
+      include: [
+        {
+          model: Device,
+          include: [{ model: Category }]
+        },
+        {
+          model: Member,
+          as: 'member',
+          attributes: ['id', 'username', 'email', 'deposit'],
+          required: false
+        },
+        {
+          model: TransactionProduct,
+          as: 'transactionProducts',
+          include: [{
+            model: Product,
+            as: 'product'
+          }],
+          required: false
+        }
+      ],
+      order: [['start', 'DESC']],
+      limit: parseInt(limit),
+      offset: offset
+    });
+
+    // Calculate summary for this date (from ALL transactions, not just paginated)
+    // We need to get total count for summary
+    const allTransactionsForDate = await Transaction.findAll({
+      where: whereClause,
+      include: [
+        {
+          model: TransactionProduct,
+          as: 'transactionProducts',
+          include: [{
+            model: Product,
+            as: 'product'
+          }],
+          required: false
+        }
+      ]
+    });
+
+    let totalDevice = 0;
+    let totalCafe = 0;
+    let totalAll = 0;
+
+    allTransactionsForDate.forEach(tx => {
+      const txData = tx.toJSON();
+      
+      const productsTotal = txData.transactionProducts 
+        ? txData.transactionProducts.reduce((sum, tp) => sum + (tp.subtotal || 0), 0)
+        : 0;
+      
+      const rentalCost = (txData.cost || 0) - productsTotal;
+
+      totalDevice += rentalCost > 0 ? rentalCost : 0;
+      totalCafe += productsTotal;
+      totalAll += txData.cost || 0;
+    });
+
+    // Map paginated transactions with rental/products breakdown
+    const transactionsWithDetails = transactions.map(tx => {
+      const txData = tx.toJSON();
+      
+      const productsTotal = txData.transactionProducts 
+        ? txData.transactionProducts.reduce((sum, tp) => sum + (tp.subtotal || 0), 0)
+        : 0;
+      
+      const rentalCost = (txData.cost || 0) - productsTotal;
+
+      return {
+        ...txData,
+        rentalCost: rentalCost > 0 ? rentalCost : 0,
+        productsTotal
+      };
+    });
+
+    const totalPages = Math.ceil(count / parseInt(limit));
+
+    return res.status(200).json({
+      message: 'Success',
+      data: {
+        date: date,
+        summary: {
+          pendapatanDevice: totalDevice,
+          pendapatanCafe: totalCafe,
+          totalPendapatan: totalAll,
+          transactionCount: count
+        },
+        transactions: transactionsWithDetails,
+        pagination: {
+          totalItems: count,
+          totalPages,
+          currentPage: parseInt(page),
+          itemsPerPage: parseInt(limit)
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error getting transactions by date:', error);
+    return res.status(500).json({
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   createTransaction,
   createRegularTransaction,
@@ -913,5 +1182,7 @@ module.exports = {
   getTransactionsByUserId,
   updateTransaction,
   deleteTransaction,
+  getTransactionSummaryByDate,
+  getTransactionsByDate,
   // addTime
 };

@@ -28,6 +28,10 @@ module.exports = (sequelize, DataTypes) => {
             type: DataTypes.ENUM('open', 'closed'),
             defaultValue: 'open'
         },
+        isWithdrawn: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: false
+        },
         note: DataTypes.TEXT
     }, {
         sequelize,

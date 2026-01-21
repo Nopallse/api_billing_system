@@ -6,7 +6,7 @@ info:
     API documentation for the Billing System application
     
 servers:
-  - url: http://34.101.143.2:3000/api
+  - url: http://localhost:3005/api
     description: Deploy Server
   - url: https://sponge-quiet-brightly.ngrok-free.app/api
     description: Tunnel Server
@@ -24,6 +24,10 @@ tags:
     description: Endpoint untuk manajemen device dan kontrol timer
   - name: Transaction
     description: Endpoint untuk manajemen transaksi umum
+  - name: Product
+    description: Endpoint untuk manajemen produk (Food & Beverage)
+  - name: Shift
+    description: Endpoint untuk manajemen shift kasir (shift start/end, payment tracking)
   - name: Member
     description: Endpoint untuk manajemen member
   - name: Member Transaction
@@ -224,6 +228,156 @@ components:
           type: string
           format: uuid
           description: ID transaksi yang terkait
+    
+    Product:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Product ID
+        name:
+          type: string
+          description: Product name
+        description:
+          type: string
+          nullable: true
+          description: Product description
+        price:
+          type: integer
+          description: Product price in rupiah
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - price
+    
+    Shift:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Shift ID
+        userId:
+          type: string
+          format: uuid
+          description: User ID who owns this shift
+        startTime:
+          type: string
+          format: date-time
+          description: Shift start time
+        endTime:
+          type: string
+          format: date-time
+          nullable: true
+          description: Shift end time (null if shift is still active)
+        totalIncome:
+          type: integer
+          nullable: true
+          description: Total income during this shift (calculated when shift ends)
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - userId
+        - startTime
+    
+    Payment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Payment ID
+        shiftId:
+          type: string
+          format: uuid
+          description: Shift ID this payment belongs to
+        userId:
+          type: string
+          format: uuid
+          description: User ID who processed this payment
+        transactionId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Transaction ID (if payment is related to a transaction)
+        amount:
+          type: integer
+          description: Payment amount in rupiah
+        type:
+          type: string
+          enum: [RENTAL, FNB, TOPUP, REFUND]
+          description: Payment type (RENTAL=device rental, FNB=food & beverage, TOPUP=member deposit, REFUND=refund)
+        paymentMethod:
+          type: string
+          enum: [CASH, TRANSFER, DEPOSIT]
+          description: Payment method used
+        note:
+          type: string
+          nullable: true
+          description: Additional notes for this payment
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - shiftId
+        - userId
+        - amount
+        - type
+        - paymentMethod
+    
+    TransactionProduct:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: TransactionProduct ID
+        transactionId:
+          type: string
+          format: uuid
+          description: Transaction ID
+        productId:
+          type: string
+          format: uuid
+          description: Product ID
+        quantity:
+          type: integer
+          description: Quantity of product
+        price:
+          type: integer
+          description: Price snapshot at time of adding (for historical accuracy)
+        subtotal:
+          type: integer
+          description: Calculated as quantity * price
+        product:
+          $ref: "#/components/schemas/Product"
+          description: Product details (included when fetched)
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - transactionId
+        - productId
+        - quantity
+        - price
+        - subtotal
 
 paths:
   # AUTH ROUTES
@@ -1140,7 +1294,203 @@ paths:
         "404":
           description: Transaction not found
 
+  # TRANSACTION PRODUCT ROUTES
+  /transaction/{transactionId}/products:
+    get:
+      summary: Get products in a transaction
+      tags: [Transaction]
+      description: Get all products (F&B items) added to a specific transaction.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: transactionId
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Transaction ID
+      responses:
+        "200":
+          description: Transaction products retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      products:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/TransactionProduct"
+                      productsTotal:
+                        type: integer
+                        description: Total cost of all products
+                      productsCount:
+                        type: integer
+                        description: Number of products in transaction
+        "404":
+          description: Transaction not found
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
+    post:
+      summary: Add product to transaction
+      tags: [Transaction]
+      description: Add a product (F&B item) to an active transaction. For upfront payment transactions, the product cost is added to transaction cost immediately. For end payment transactions, it will be calculated at finish.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: transactionId
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Transaction ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                productId:
+                  type: string
+                  format: uuid
+                  description: Product ID to add
+                quantity:
+                  type: integer
+                  default: 1
+                  minimum: 1
+                  description: Quantity of product
+              required:
+                - productId
+              example:
+                productId: "123e4567-e89b-12d3-a456-426614174000"
+                quantity: 2
+      responses:
+        "201":
+          description: Product added to transaction successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/TransactionProduct"
+        "400":
+          description: Bad request - transaction is completed/cancelled, invalid quantity, or missing productId
+        "404":
+          description: Transaction or product not found
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
 
+  /transaction/{transactionId}/products/{productTransactionId}:
+    put:
+      summary: Update product quantity in transaction
+      tags: [Transaction]
+      description: Update the quantity of a product in a transaction. The subtotal will be recalculated automatically.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: transactionId
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Transaction ID
+        - in: path
+          name: productTransactionId
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: TransactionProduct ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                quantity:
+                  type: integer
+                  minimum: 1
+                  description: New quantity for the product
+              required:
+                - quantity
+              example:
+                quantity: 3
+      responses:
+        "200":
+          description: Product quantity updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/TransactionProduct"
+        "400":
+          description: Bad request - invalid quantity or transaction completed/cancelled
+        "404":
+          description: Transaction product not found
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
+    delete:
+      summary: Remove product from transaction
+      tags: [Transaction]
+      description: Remove a product from an active transaction.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: transactionId
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Transaction ID
+        - in: path
+          name: productTransactionId
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: TransactionProduct ID
+      responses:
+        "200":
+          description: Product removed from transaction successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "400":
+          description: Transaction is completed or cancelled
+        "404":
+          description: Product not found in transaction
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
 
   # CONNECTION ROUTES
   /connection/status:
@@ -2043,6 +2393,665 @@ paths:
         "500":
           description: Internal server error
 
+  # PRODUCT ROUTES
+  /products:
+    get:
+      summary: Get all products
+      tags: [Product]
+      description: Get all products (Food & Beverage items). No authentication required for public access.
+      responses:
+        "200":
+          description: List of products retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Success"
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Product"
+        "500":
+          description: Internal server error
+    post:
+      summary: Create a new product (Admin only)
+      tags: [Product]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Product name
+                description:
+                  type: string
+                  description: Product description (optional)
+                price:
+                  type: integer
+                  description: Product price in rupiah
+              required:
+                - name
+                - price
+              example:
+                name: "Kopi Susu"
+                description: "Kopi susu dengan gula aren"
+                price: 15000
+      responses:
+        "201":
+          description: Product created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/Product"
+        "400":
+          description: Bad request - name or price missing, or price negative
+        "403":
+          description: Forbidden - Admin access required
+        "401":
+          description: Unauthorized
+
+  /products/{id}:
+    get:
+      summary: Get product by ID
+      tags: [Product]
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Product ID
+      responses:
+        "200":
+          description: Product retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/Product"
+        "404":
+          description: Product not found
+        "500":
+          description: Internal server error
+    put:
+      summary: Update product (Admin only)
+      tags: [Product]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Product ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                price:
+                  type: integer
+              example:
+                name: "Kopi Susu Premium"
+                description: "Kopi susu premium dengan gula aren asli"
+                price: 20000
+      responses:
+        "200":
+          description: Product updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/Product"
+        "400":
+          description: Bad request - price cannot be negative
+        "404":
+          description: Product not found
+        "403":
+          description: Forbidden - Admin access required
+        "401":
+          description: Unauthorized
+    delete:
+      summary: Delete product (Admin only)
+      tags: [Product]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Product ID
+      responses:
+        "200":
+          description: Product deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "404":
+          description: Product not found
+        "403":
+          description: Forbidden - Admin access required
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
+
+  # SHIFT ROUTES
+  /shift/start:
+    post:
+      summary: Start a new shift
+      tags: [Shift]
+      description: Start a new shift for the authenticated user. Only one shift can be active at a time per user.
+      security:
+        - BearerAuth: []
+      responses:
+        "201":
+          description: Shift started successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/Shift"
+        "400":
+          description: User already has an active shift
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
+
+  /shift/end:
+    post:
+      summary: End the active shift
+      tags: [Shift]
+      description: End the current active shift and calculate total income.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Shift ended successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      shift:
+                        $ref: "#/components/schemas/Shift"
+                      totalPayments:
+                        type: integer
+                      totalIncome:
+                        type: integer
+        "400":
+          description: No active shift found
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
+
+  /shift/withdraw:
+    patch:
+      summary: Mark shifts as withdrawn
+      tags: [Shift]
+      description: Mark one or more shifts as withdrawn. Only closed shifts that haven't been withdrawn yet can be marked.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - shiftIds
+              properties:
+                shiftIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  description: Array of shift IDs to mark as withdrawn
+            example:
+              shiftIds: ["550e8400-e29b-41d4-a716-446655440000", "550e8400-e29b-41d4-a716-446655440001"]
+      responses:
+        "200":
+          description: Shifts marked as withdrawn successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "2 shift berhasil ditandai sebagai sudah ditarik"
+                  data:
+                    type: object
+                    properties:
+                      updatedCount:
+                        type: integer
+                        example: 2
+                      shiftIds:
+                        type: array
+                        items:
+                          type: string
+        "400":
+          description: Invalid request body
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
+
+  /shift/status:
+    get:
+      summary: Get current shift status
+      tags: [Shift]
+      description: Get the status of the user's current shift (active or ended).
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Shift status retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      hasActiveShift:
+                        type: boolean
+                      shift:
+                        $ref: "#/components/schemas/Shift"
+                        nullable: true
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
+
+  /shift/summary/by-date:
+    get:
+      summary: Get income summary grouped by date
+      tags: [Shift]
+      description: Get income summary aggregated by date. Returns total income (device + cafe) per date.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+          description: Page number for pagination
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 10
+          description: Number of items per page
+        - in: query
+          name: start_date
+          schema:
+            type: string
+            format: date
+          description: Start date for filtering
+        - in: query
+          name: end_date
+          schema:
+            type: string
+            format: date
+          description: End date for filtering
+      responses:
+        "200":
+          description: Income summary by date retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      summaries:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            date:
+                              type: string
+                              format: date
+                              description: Date in YYYY-MM-DD format
+                            pendapatanDevice:
+                              type: number
+                              description: Total device rental income for this date
+                            pendapatanCafe:
+                              type: number
+                              description: Total cafe income for this date
+                            totalPendapatan:
+                              type: number
+                              description: Total income for this date
+                            shiftCount:
+                              type: integer
+                              description: Number of shifts on this date
+                      pagination:
+                        type: object
+                        properties:
+                          totalItems:
+                            type: integer
+                          totalPages:
+                            type: integer
+                          currentPage:
+                            type: integer
+                          itemsPerPage:
+                            type: integer
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
+
+  /shift/history:
+    get:
+      summary: Get shift history
+      tags: [Shift]
+      description: Get the shift history with pagination and optional filters. Returns shifts with payment summary.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+          description: Page number for pagination
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 10
+          description: Number of items per page
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [active, closed]
+          description: Filter shifts by status (active or closed)
+        - in: query
+          name: date
+          schema:
+            type: string
+            format: date
+          description: Filter shifts by specific date (YYYY-MM-DD)
+        - in: query
+          name: start_date
+          schema:
+            type: string
+            format: date
+          description: Start date for filtering shifts (used with end_date for range)
+        - in: query
+          name: end_date
+          schema:
+            type: string
+            format: date
+          description: End date for filtering shifts (used with start_date for range)
+      responses:
+        "200":
+          description: Shift history retrieved with payment summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      shifts:
+                        type: array
+                        items:
+                          allOf:
+                            - $ref: "#/components/schemas/Shift"
+                            - type: object
+                              properties:
+                                summary:
+                                  type: object
+                                  properties:
+                                    pendapatanDevice:
+                                      type: number
+                                      description: Total device rental income (RENTAL payments)
+                                    pendapatanCafe:
+                                      type: number
+                                      description: Total cafe income (FNB payments)
+                                    totalPendapatan:
+                                      type: number
+                                      description: Total income from all payments
+                                    transactionCount:
+                                      type: integer
+                                      description: Number of unique transactions
+                      pagination:
+                        type: object
+                        properties:
+                          currentPage:
+                            type: integer
+                          totalPages:
+                            type: integer
+                          totalItems:
+                            type: integer
+                          itemsPerPage:
+                            type: integer
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
+
+  /shift/{shiftId}/transactions:
+    get:
+      summary: Get transactions for a specific shift
+      tags: [Shift]
+      description: Get all transactions within a specific shift with full details including products and payments.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: shiftId
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Shift ID
+      responses:
+        "200":
+          description: Shift transactions retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      shift:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                            format: uuid
+                          startTime:
+                            type: string
+                            format: date-time
+                          endTime:
+                            type: string
+                            format: date-time
+                            nullable: true
+                          status:
+                            type: string
+                          user:
+                            type: object
+                            properties:
+                              id:
+                                type: string
+                                format: uuid
+                              username:
+                                type: string
+                              email:
+                                type: string
+                      transactions:
+                        type: array
+                        items:
+                          allOf:
+                            - $ref: "#/components/schemas/Transaction"
+                            - type: object
+                              properties:
+                                productsTotal:
+                                  type: number
+                                  description: Total cost of all products in this transaction
+                                rentalCost:
+                                  type: number
+                                  description: Device rental cost (total cost - productsTotal)
+                                transactionProducts:
+                                  type: array
+                                  items:
+                                    $ref: "#/components/schemas/TransactionProduct"
+                                payments:
+                                  type: array
+                                  items:
+                                    type: object
+                                    properties:
+                                      amount:
+                                        type: number
+                                      type:
+                                        type: string
+                                        enum: [RENTAL, FNB, TOPUP, PENALTY, OTHER]
+                                      paymentMethod:
+                                        type: string
+                                        enum: [CASH, NON_CASH]
+                                      createdAt:
+                                        type: string
+                                        format: date-time
+                      summary:
+                        type: object
+                        properties:
+                          pendapatanDevice:
+                            type: number
+                            description: Total device rental income (RENTAL payments)
+                          pendapatanCafe:
+                            type: number
+                            description: Total cafe income (FNB payments)
+                          totalPendapatan:
+                            type: number
+                            description: Total income from all payments
+                          transactionCount:
+                            type: integer
+                            description: Number of transactions
+        "404":
+          description: Shift not found
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
+
+  /shift/{shiftId}/report:
+    get:
+      summary: Get detailed shift report
+      tags: [Shift]
+      description: Get detailed report for a specific shift including all payments and transactions.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: shiftId
+          schema:
+            type: string
+            format: uuid
+          required: true
+          description: Shift ID
+      responses:
+        "200":
+          description: Shift report retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      shift:
+                        $ref: "#/components/schemas/Shift"
+                      payments:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Payment"
+                      summary:
+                        type: object
+                        properties:
+                          totalIncome:
+                            type: integer
+                          totalTransactions:
+                            type: integer
+                          rentalIncome:
+                            type: integer
+                          fnbIncome:
+                            type: integer
+        "404":
+          description: Shift not found
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal server error
+
   # DASHBOARD ROUTES
   /dashboard:
     get:
@@ -2191,12 +3200,11 @@ paths:
         Mendapatkan informasi dashboard admin yang komprehensif termasuk:
         
         **Profil Admin:**
-        - Nama, email, status online/offline, dan foto profil
+        - Nama, email, status (Aktif/Tidak Aktif berdasarkan isActive di database), dan foto profil
         
         **Status Perangkat:**
         - Perangkat sedang berjalan (aktif dengan timer)
         - Perangkat siap digunakan (tidak aktif)
-        - Perangkat hampir selesai (sisa waktu ≤ 30 menit)
         
         **Total Pemasukan:**
         - Data pemasukan dengan filter waktu (minggu/bulan/tahun)
@@ -2205,11 +3213,17 @@ paths:
         
         **Daftar Perangkat Sedang Berjalan:**
         - 10 perangkat teratas yang sedang aktif
-        - Informasi nama, kategori, dan sisa waktu
+        - Informasi nama dan kategori
         
         **User Terdaftar:**
-        - 6 user teratas dengan status online/offline
+        - 6 user teratas dengan status Aktif/Tidak Aktif (berdasarkan isActive di database)
         - Total jumlah user terdaftar
+        
+        **Quick Stats:**
+        - Pemasukan hari ini
+        - Jumlah transaksi hari ini
+        - Jumlah transaksi dalam periode filter
+        - Total member, total perangkat, total user
       security:
         - BearerAuth: []
       parameters:
@@ -2248,7 +3262,9 @@ paths:
                         example: "admin@example.com"
                       status:
                         type: string
-                        example: "Online"
+                        description: Status berdasarkan isActive dari database (Aktif/Tidak Aktif)
+                        enum: [Aktif, Tidak Aktif]
+                        example: "Aktif"
                       profile_picture:
                         type: string
                         format: uri
@@ -2275,15 +3291,6 @@ paths:
                           value:
                             type: string
                             example: "15/50"
-                      almost_finished:
-                        type: object
-                        properties:
-                          text:
-                            type: string
-                            example: "Perangkat hampir selesai"
-                          value:
-                            type: string
-                            example: "5/35"
                   total_income:
                     type: object
                     properties:
@@ -2338,9 +3345,6 @@ paths:
                             kategori:
                               type: string
                               example: "Kategori 1"
-                            sisa_waktu:
-                              type: string
-                              example: "90 menit"
                       total_count:
                         type: integer
                         example: 35
@@ -2367,15 +3371,45 @@ paths:
                               example: "admin"
                             status:
                               type: string
-                              example: "Online"
+                              description: Status berdasarkan isActive dari database (Aktif/Tidak Aktif)
+                              enum: [Aktif, Tidak Aktif]
+                              example: "Aktif"
                       total_count:
                         type: integer
+                        example: 25
+                  quick_stats:
+                    type: object
+                    description: Statistik cepat untuk dashboard
+                    properties:
+                      today_income:
+                        type: integer
+                        description: Total pemasukan hari ini
+                        example: 150000
+                      today_transactions:
+                        type: integer
+                        description: Jumlah transaksi hari ini
+                        example: 12
+                      period_transactions:
+                        type: integer
+                        description: Jumlah transaksi dalam periode filter yang dipilih
+                        example: 45
+                      total_members:
+                        type: integer
+                        description: Total member terdaftar
+                        example: 120
+                      total_devices:
+                        type: integer
+                        description: Total perangkat terdaftar
+                        example: 50
+                      total_users:
+                        type: integer
+                        description: Total user terdaftar
                         example: 25
               example:
                 admin_profile:
                   name: "admin"
                   email: "admin@example.com"
-                  status: "Online"
+                  status: "Aktif"
                   profile_picture: null
                 device_status:
                   running:
@@ -2384,20 +3418,15 @@ paths:
                   ready:
                     text: "Perangkat siap digunakan"
                     value: "15/50"
-                  almost_finished:
-                    text: "Perangkat hampir selesai"
-                    value: "5/35"
                 running_devices_list:
                   title: "Daftar Perangkat Sedang Berjalan"
                   devices:
                     - no: 1
                       nama_perangkat: "Device 1"
                       kategori: "Kategori 1"
-                      sisa_waktu: "90 menit"
                     - no: 2
                       nama_perangkat: "Device 2"
                       kategori: "Kategori 2"
-                      sisa_waktu: "45 menit"
                   total_count: 35
                 total_income:
                   title: "Total pemasukan"
@@ -2431,12 +3460,19 @@ paths:
                     - no: 1
                       email: "admin@example.com"
                       nama: "admin"
-                      status: "Online"
+                      status: "Aktif"
                     - no: 2
                       email: "user1@example.com"
                       nama: "user1"
-                      status: "Offline"
+                      status: "Tidak Aktif"
                   total_count: 25
+                quick_stats:
+                  today_income: 150000
+                  today_transactions: 12
+                  period_transactions: 45
+                  total_members: 120
+                  total_devices: 50
+                  total_users: 25
         "400":
           description: Bad Request - Parameter tidak valid
           content:
