@@ -47,6 +47,7 @@ const blockUser = async (req, res) => {
             message: `User berhasil ${statusText}`,
             data: {
                 id: user.id,
+                username: user.username,
                 email: user.email,
                 type: user.type,
                 isActive: newStatus
@@ -61,7 +62,7 @@ const blockUser = async (req, res) => {
 // Create new user (moved from auth controller)
 const createUser = async (req, res) => {
     try {
-        const { email, password, type = 'user' } = req.body;
+        const { username, email, password, type = 'user' } = req.body;
         
         if (!email || !password) {
             return res.status(400).json({ message: 'Email dan password harus diisi' });
@@ -78,6 +79,7 @@ const createUser = async (req, res) => {
         
         const user = await User.create({ 
             id: userId,
+            username: username || email.split('@')[0], // Default username dari email jika tidak diisi
             email, 
             password: hashedPassword, 
             type: type
