@@ -124,7 +124,34 @@ const refreshToken = async (req, res) => {
     }
 };
 
+// Return currently authenticated user profile
+const getProfile = async (req, res) => {
+    try {
+        // `tokenValidation` middleware attaches the user to the request
+        const user = req.user;
+
+        if (!user) {
+            return res.status(401).json({ message: 'User tidak ditemukan' });
+        }
+
+        return res.status(200).json({
+            message: 'Profil berhasil diambil',
+            data: {
+                id: user.id,
+                username: user.username,
+                email: user.email,
+                type: user.type,
+                isActive: user.isActive
+            }
+        });
+    } catch (error) {
+        console.error('Get profile error:', error);
+        return res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+    }
+};
+
 module.exports = {
     login,
-    refreshToken
+    refreshToken,
+    getProfile
 };
