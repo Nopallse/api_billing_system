@@ -11,6 +11,7 @@ const {
     deleteTransaction,
     getTransactionSummaryByDate,
     getTransactionsByDate,
+    logBleDisconnectEvent,
 } = require("../controllers/transaction.controller");
 const {
     addProductToTransaction,
@@ -28,6 +29,9 @@ router.post("/regular/create", tokenValidation, createRegularTransaction);
 
 // Finish regular transaction - bayar di akhir (memerlukan auth)
 router.post("/regular/finish", tokenValidation, finishRegularTransaction);
+
+// Log BLE disconnect event
+router.post("/:transactionId/log-disconnect", tokenValidation, logBleDisconnectEvent);
 
 // Get all transactions (admin only)
 router.get("/", tokenValidation, getAllTransactions);

@@ -23,7 +23,7 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false
     },
     activityType: {
-      type: DataTypes.ENUM('start', 'stop', 'resume', 'add_time', 'end'),
+      type: DataTypes.ENUM('start', 'stop', 'resume', 'add_time', 'end', 'ble_disconnect'),
       allowNull: false
     },
     description: {

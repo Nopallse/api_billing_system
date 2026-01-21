@@ -6,8 +6,6 @@ const { Op } = require('sequelize');
 
 const dashboard = async (req, res) => {
     try {
-        // Mendapatkan data device dari database
-        // WebSocket disabled - gunakan timerStatus dari database
         const devices = await Device.findAll({
             include: [{
                 model: Category,
@@ -84,6 +82,12 @@ const dashboard = async (req, res) => {
             active_devices: activeDevicesDetail,
             last_used_devices: lastUsedDevicesDetail
         };
+        
+        console.log('📊 Dashboard Summary:', {
+            total_devices: devices.length,
+            active: activeDevices.length,
+            inactive: inactiveDevices.length
+        });
         
         res.status(200).json(response);
     } catch (error) {
