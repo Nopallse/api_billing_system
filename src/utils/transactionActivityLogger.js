@@ -159,6 +159,31 @@ const logTransactionEnd = async (transactionId, totalDuration, totalCost, reason
 };
 
 /**
+ * Log BLE disconnect event
+ */
+const logBleDisconnect = async (transactionId, disconnectReason, disconnectSource, deviceId) => {
+    const sourceText = disconnectSource === 'esp32' ? 'ESP32 terputus' : 
+                       disconnectSource === 'mobile' ? 'Aplikasi memutuskan koneksi' : 
+                       disconnectSource === 'timeout' ? 'Timeout (tidak ada heartbeat)' : 
+                       'Koneksi terputus';
+    
+    const description = `BLE terputus: ${sourceText}. Alasan: ${disconnectReason}`;
+    
+    const metadata = {
+        disconnectReason,
+        disconnectSource,
+        deviceId,
+        timestamp: new Date().toISOString()
+    };
+    
+    return await logTransactionActivity(transactionId, 'ble_disconnect', {
+        description,
+        deviceStatus: 'disconnected',
+        metadata
+    });
+};
+
+/**
  * Mendapatkan semua aktivitas untuk transaksi
  */
 const getTransactionActivities = async (transactionId) => {
@@ -306,6 +331,7 @@ module.exports = {
     logTransactionResume,
     logAddTime,
     logTransactionEnd,
+        logBleDisconnect,
     getTransactionActivities,
     getTransactionSummary,
     syncOfflineActivities
