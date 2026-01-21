@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { getConnectionStatus, isTimerActive, isTimerPaused, canResumeTimer } = require("../wsClient");
-const { getUnregisteredDevices, getDisconnectedDevices } = require("../controllers/connection.controller");
+const { getUnregisteredDevices, getDisconnectedDevices, getMobileNotifications } = require("../controllers/connection.controller");
 
 // Get connection status
 router.get("/status", (req, res) => {
@@ -116,6 +116,7 @@ function getStatusMessage(deviceStatus, isTimerActive, isTimerPaused, canResume)
     }
 }
 
-
+// Mobile notifications (SSE)
+router.get("/mobile/notifications", getMobileNotifications);
 
 module.exports = router;

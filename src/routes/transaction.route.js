@@ -9,7 +9,9 @@ const {
     getTransactionsByUserId,
     updateTransaction,
     deleteTransaction,
-        logBleDisconnectEvent,
+    getTransactionSummaryByDate,
+    getTransactionsByDate,
+    logBleDisconnectEvent,
 } = require("../controllers/transaction.controller");
 const {
     addProductToTransaction,
@@ -33,6 +35,12 @@ router.post("/:transactionId/log-disconnect", tokenValidation, logBleDisconnectE
 
 // Get all transactions (admin only)
 router.get("/", tokenValidation, getAllTransactions);
+
+// Get transaction summary grouped by date (langsung dari tabel Transaction)
+router.get("/summary/by-date", tokenValidation, getTransactionSummaryByDate);
+
+// Get transactions by specific date
+router.get("/by-date", tokenValidation, getTransactionsByDate);
 
 // Get transactions by user ID (memerlukan auth)
 router.get("/user/:userId", tokenValidation, getTransactionsByUserId);

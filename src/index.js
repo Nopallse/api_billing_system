@@ -57,7 +57,7 @@ app.use('/api/user', userRoutes);
 app.use('/api/member', memberRoutes);
 app.use('/api/member-transactions', memberTransactionRoutes);
 app.use('/api/shift', shiftRoutes);
-app.use('/api/product', productRoutes);
+app.use('/api/products', productRoutes);
 
 // ⭐ LANGKAH PENTING: Buat HTTP Server dari Express app
 const server = http.createServer(app);

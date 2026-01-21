@@ -1,8 +1,7 @@
 // WebSocket DISABLED - Stub functions
 const getConnectionStatus = () => ({ devices: [], totalDevices: 0 });
 const isTimerActive = () => false;
-const isUserOnline = () => false;
-const { Device, Transaction, Category, User, sequelize } = require('../models');
+const { Device, Transaction, Category, User, Member, sequelize } = require('../models');
 const { Op } = require('sequelize');
 
 const dashboard = async (req, res) => {
@@ -117,38 +116,28 @@ const adminDashboard = async (req, res) => {
         const readyDevices = connectionStatus.devices.filter(device => device.status === 'off');
         const totalDevices = devices.length;
         
-        // Menghitung perangkat yang hampir selesai (sisa waktu < 30 menit)
-        const almostFinishedDevices = activeDevices.filter(device => {
-            const deviceData = devices.find(d => d.id === device.deviceId);
-            if (!deviceData || !deviceData.timerDuration || !deviceData.timerElapsed) return false;
-            
-            const remainingTime = deviceData.timerDuration - deviceData.timerElapsed;
-            const remainingMinutes = Math.ceil(remainingTime / 60); // Convert seconds to minutes
-            return remainingMinutes <= 30; // 30 menit atau kurang
+        // Data profil admin dari user yang sedang login
+        // Status berdasarkan isActive dari database (true = Aktif, false = Tidak Aktif)
+        const adminUser = await User.findByPk(req.user.id, {
+            attributes: ['id', 'email', 'username', 'isActive']
         });
         
-        // Data profil admin dari user yang sedang login
         const adminProfile = {
-            name: req.user.email.split('@')[0], // Username dari email
+            name: adminUser?.username || req.user.email.split('@')[0], // Username dari database atau email
             email: req.user.email,
-            status: "Online",
+            status: adminUser?.isActive ? "Aktif" : "Tidak Aktif",
             profile_picture: null // Tidak ada profile picture dari database
         };
         
-        // Mendapatkan daftar perangkat yang sedang berjalan dengan sisa waktu
+        // Mendapatkan daftar perangkat yang sedang berjalan
         const runningDevicesList = await Promise.all(
             activeDevices.slice(0, 10).map(async (device, index) => {
                 const deviceData = devices.find(d => d.id === device.deviceId);
-                const remainingTime = deviceData?.timerDuration && deviceData?.timerElapsed 
-                    ? deviceData.timerDuration - deviceData.timerElapsed 
-                    : 0;
-                const remainingMinutes = Math.max(0, Math.ceil(remainingTime / 60)); // Convert seconds to minutes
                 
                 return {
                     no: index + 1,
                     nama_perangkat: deviceData?.name || `Device ${device.deviceId}`,
-                    kategori: deviceData?.Category?.categoryName || 'Kategori 1',
-                    sisa_waktu: `${remainingMinutes} menit`
+                    kategori: deviceData?.Category?.categoryName || 'Kategori 1'
                 };
             })
         );
@@ -190,7 +179,8 @@ const adminDashboard = async (req, res) => {
             });
             
             weeklyTransactions.forEach(transaction => {
-                const dayIndex = transaction.createdAt.getDay();
+                const date = new Date(transaction.createdAt);
+                const dayIndex = date.getDay();
                 const dayName = daysOfWeek[dayIndex === 0 ? 6 : dayIndex - 1]; // Convert Sunday=0 to Sunday=6
                 dailyIncome[dayName] += transaction.cost || 0;
             });
@@ -236,7 +226,8 @@ const adminDashboard = async (req, res) => {
             }
             
             monthlyTransactions.forEach(transaction => {
-                const weekNumber = Math.ceil((transaction.createdAt.getDate() - 1) / 7) + 1;
+                const date = new Date(transaction.createdAt);
+                const weekNumber = Math.ceil((date.getDate() - 1) / 7) + 1;
                 weeklyIncome[`Minggu ${weekNumber}`] += transaction.cost || 0;
             });
             
@@ -282,7 +273,8 @@ const adminDashboard = async (req, res) => {
             });
             
             yearlyTransactions.forEach(transaction => {
-                const monthIndex = transaction.createdAt.getMonth();
+                const date = new Date(transaction.createdAt);
+                const monthIndex = date.getMonth();
                 monthlyIncome[months[monthIndex]] += transaction.cost || 0;
             });
             
@@ -302,12 +294,63 @@ const adminDashboard = async (req, res) => {
         });
         
         // Format data user untuk response
+        // Status berdasarkan isActive dari database (true = Aktif, false = Tidak Aktif)
         const usersList = registeredUsers.map((user, index) => ({
             no: index + 1,
             email: user.email,
             nama: user.email.split('@')[0], // Menggunakan username dari email
-            status: isUserOnline(user.id) ? "Online" : "Offline"
+            status: user.isActive ? "Aktif" : "Tidak Aktif"
         }));
+        
+        // Quick Stats - Calculate today's data
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const todayEnd = new Date();
+        todayEnd.setHours(23, 59, 59, 999);
+        
+        // Today's income and transaction count
+        const todayTransactions = await Transaction.findAll({
+            where: {
+                createdAt: {
+                    [Op.between]: [todayStart, todayEnd]
+                }
+            }
+        });
+        
+        const todayIncome = todayTransactions.reduce((sum, t) => sum + (t.cost || 0), 0);
+        const todayTransactionCount = todayTransactions.length;
+        
+        // Total counts
+        const totalMembers = await Member.count();
+        const totalUsers = await User.count();
+        
+        // Period transaction count (based on selected filter)
+        let periodTransactionCount = 0;
+        if (timeFilter === 'week') {
+            periodTransactionCount = await Transaction.count({
+                where: {
+                    createdAt: {
+                        [Op.between]: [startDate, endDate]
+                    }
+                }
+            });
+        } else if (timeFilter === 'month') {
+            periodTransactionCount = await Transaction.count({
+                where: {
+                    createdAt: {
+                        [Op.between]: [startDate, endDate]
+                    }
+                }
+            });
+        } else if (timeFilter === 'year') {
+            periodTransactionCount = await Transaction.count({
+                where: {
+                    createdAt: {
+                        [Op.between]: [startDate, endDate]
+                    }
+                }
+            });
+        }
         
         // Menyiapkan data untuk response
         const response = {
@@ -320,10 +363,6 @@ const adminDashboard = async (req, res) => {
                 ready: {
                     text: "Perangkat siap digunakan", 
                     value: `${readyDevices.length}/${totalDevices}`
-                },
-                almost_finished: {
-                    text: "Perangkat hampir selesai",
-                    value: `${almostFinishedDevices.length}/${activeDevices.length}`
                 }
             },
             running_devices_list: {
@@ -345,7 +384,15 @@ const adminDashboard = async (req, res) => {
             registered_users: {
                 title: "User yang terdaftar",
                 users: usersList,
-                total_count: await User.count()
+                total_count: totalUsers
+            },
+            quick_stats: {
+                today_income: todayIncome,
+                today_transactions: todayTransactionCount,
+                period_transactions: periodTransactionCount,
+                total_members: totalMembers,
+                total_devices: totalDevices,
+                total_users: totalUsers
             }
         };
         
