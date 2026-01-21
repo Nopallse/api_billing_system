@@ -6,10 +6,8 @@ const { Op } = require('sequelize');
 
 const dashboard = async (req, res) => {
     try {
-        // Mendapatkan status koneksi dari semua perangkat
-        const connectionStatus = getConnectionStatus();
-        
         // Mendapatkan data device dari database
+        // WebSocket disabled - gunakan timerStatus dari database
         const devices = await Device.findAll({
             include: [{
                 model: Category,
@@ -17,30 +15,37 @@ const dashboard = async (req, res) => {
             }]
         });
         
-        // Menghitung total device yang aktif dan tidak aktif
-        const activeDevices = connectionStatus.devices.filter(device => device.status === 'on');
-        const inactiveDevices = connectionStatus.devices.filter(device => device.status === 'off');
+        const now = new Date();
+        
+        // Menghitung total device yang aktif dan tidak aktif berdasarkan timerStatus
+        const activeDevices = devices.filter(device => {
+            if (device.timerStatus === 'start' && device.timerStart && device.timerDuration) {
+                const startTime = new Date(device.timerStart);
+                const elapsedSeconds = Math.floor((now - startTime) / 1000);
+                return elapsedSeconds < device.timerDuration;
+            }
+            return false;
+        });
+        const inactiveDevices = devices.filter(device => 
+            device.timerStatus !== 'start' || !device.timerStart
+        );
         
         // Mengambil detail device yang aktif dengan data dari database
-        const activeDevicesDetail = await Promise.all(
-            activeDevices.map(async (device) => {
-                const deviceData = devices.find(d => d.id === device.deviceId);
-                
-                return {
-                    device_id: deviceData?.id,
-                    name: deviceData?.name,
-                    category: deviceData?.Category?.categoryName,
-                    category_cost: deviceData?.Category?.cost,
-                    periode: deviceData?.Category?.periode,
-                    status: device.status,
-                    timer_start: deviceData?.timerStart,
-                    timer_duration: deviceData?.timerDuration,
-                    timer_elapsed: deviceData?.timerElapsed,
-                    timer_status: deviceData?.timerStatus,
-                    last_paused_at: deviceData?.lastPausedAt
-                };
-            })
-        );
+        const activeDevicesDetail = activeDevices.map(device => {
+            return {
+                device_id: device.id,
+                name: device.name,
+                category: device.Category?.categoryName,
+                category_cost: device.Category?.cost,
+                periode: device.Category?.periode,
+                status: 'on',
+                timer_start: device.timerStart,
+                timer_duration: device.timerDuration,
+                timer_elapsed: device.timerElapsed,
+                timer_status: device.timerStatus,
+                last_paused_at: device.lastPausedAt
+            };
+        });
 
         // Mengambil 5 transaksi terakhir terlebih dahulu
         const lastTransactions = await Transaction.findAll({
@@ -97,10 +102,8 @@ const adminDashboard = async (req, res) => {
             'year': 'Tahun ini'
         };
         
-        // Mendapatkan status koneksi dari semua perangkat
-        const connectionStatus = getConnectionStatus();
-        
-        // Mendapatkan data device dari database
+        // Mendapatkan data device dari database dengan status timer
+        // WebSocket disabled - gunakan timerStatus dari database
         const devices = await Device.findAll({
             include: [{
                 model: Category,
@@ -108,9 +111,22 @@ const adminDashboard = async (req, res) => {
             }]
         });
         
-        // Menghitung status perangkat
-        const activeDevices = connectionStatus.devices.filter(device => device.status === 'on');
-        const readyDevices = connectionStatus.devices.filter(device => device.status === 'off');
+        const now = new Date();
+        
+        // Menghitung status perangkat berdasarkan timerStatus dari database
+        // timerStatus: 'start' = running, 'stop' = paused, 'end'/null = ready
+        const activeDevices = devices.filter(device => {
+            if (device.timerStatus === 'start' && device.timerStart && device.timerDuration) {
+                // Cek apakah timer sudah expired
+                const startTime = new Date(device.timerStart);
+                const elapsedSeconds = Math.floor((now - startTime) / 1000);
+                return elapsedSeconds < device.timerDuration;
+            }
+            return false;
+        });
+        const readyDevices = devices.filter(device => 
+            device.timerStatus !== 'start' || !device.timerStart
+        );
         const totalDevices = devices.length;
         
         // Data profil admin dari user yang sedang login
@@ -126,18 +142,14 @@ const adminDashboard = async (req, res) => {
             profile_picture: null // Tidak ada profile picture dari database
         };
         
-        // Mendapatkan daftar perangkat yang sedang berjalan
-        const runningDevicesList = await Promise.all(
-            activeDevices.slice(0, 10).map(async (device, index) => {
-                const deviceData = devices.find(d => d.id === device.deviceId);
-                
-                return {
-                    no: index + 1,
-                    nama_perangkat: deviceData?.name || `Device ${device.deviceId}`,
-                    kategori: deviceData?.Category?.categoryName || 'Kategori 1'
-                };
-            })
-        );
+        // Mendapatkan daftar perangkat yang sedang berjalan (dari database)
+        const runningDevicesList = activeDevices.slice(0, 10).map((device, index) => {
+            return {
+                no: index + 1,
+                nama_perangkat: device.name || `Device ${device.id}`,
+                kategori: device.Category?.categoryName || 'Kategori 1'
+            };
+        });
         
         // Menghitung total pemasukan berdasarkan filter waktu
         let startDate, endDate, chartData, totalIncome;

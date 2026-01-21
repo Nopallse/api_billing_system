@@ -9,7 +9,6 @@ module.exports = {
       categoryName: 'PS4 Standard - 1 Jam',
       cost: 10000, // Rp 10.000 per jam
       periode: 60,
-      description: 'PS 4',
       createdAt: new Date(),
       updatedAt: new Date()
     }, {
@@ -17,7 +16,6 @@ module.exports = {
       categoryName: 'PS5 Standard - 1 Jam',
       cost: 15000, // Rp 15.000 per jam
       periode: 60,
-      description: 'PS 5',
       createdAt: new Date(),
       updatedAt: new Date()
     }]);
