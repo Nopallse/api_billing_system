@@ -33,7 +33,7 @@ const {
 
 const createTransaction = async (req, res) => {
   try {
-    const { deviceId, start, duration } = req.body;
+    const { deviceId, start, duration, paymentMethod } = req.body;
 
     // Validasi input
     if (!deviceId || !duration || !start) {
@@ -135,6 +135,7 @@ const createTransaction = async (req, res) => {
       cost: cost,
       isMemberTransaction: false,
       paymentType: "upfront",
+      paymentMethod: paymentMethod || 'CASH',
       status: "active",
     });
 
