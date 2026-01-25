@@ -64,6 +64,11 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true,
       defaultValue: 'upfront'
     },
+    paymentMethod: {
+      type: DataTypes.ENUM('CASH', 'QRIS', 'TRANSFER', 'DEBIT', 'CREDIT'),
+      allowNull: true,
+      defaultValue: 'CASH'
+    },
     status: {
       type: DataTypes.ENUM('active', 'completed', 'cancelled'),
       allowNull: true,

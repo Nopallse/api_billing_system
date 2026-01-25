@@ -843,9 +843,9 @@ const sendDeviceCommand = async (req, res) => {
 
 const addTime = async (req, res) => {
     const { deviceId } = req.params;
-    const { additionalTime, useDeposit = true, skipActivityLog = false } = req.body;
+    const { additionalTime, useDeposit = true, paymentMethod, skipActivityLog = false } = req.body;
 
-    console.log('➕ ADD TIME request:', { deviceId, additionalTime, useDeposit, skipActivityLog });
+    console.log('➕ ADD TIME request:', { deviceId, additionalTime, useDeposit, paymentMethod, skipActivityLog });
 
     try {
         const now = new Date();
@@ -991,7 +991,15 @@ const addTime = async (req, res) => {
         // Log ke TransactionActivities (skip jika dari offline sync untuk mencegah double logging)
         if (!skipActivityLog) {
             try {
-                const paymentMethod = activeTransaction.memberId && useDeposit ? 'deposit' : 'cash';
+                // Determine payment method for logging
+                let logPaymentMethod;
+                if (activeTransaction.memberId && useDeposit) {
+                    logPaymentMethod = 'deposit';
+                } else {
+                    // Use provided paymentMethod or default to CASH
+                    logPaymentMethod = paymentMethod || 'CASH';
+                }
+                
                 const memberBalanceInfo = memberData ? {
                     previousBalance: memberData.previousDeposit,
                     newBalance: memberData.newDeposit
@@ -1001,7 +1009,7 @@ const addTime = async (req, res) => {
                     activeTransaction.id,
                     additionalSeconds,
                     incrementalCost,
-                    paymentMethod,
+                    logPaymentMethod,
                     memberBalanceInfo
                 );
                 console.log(`📝 Activity logged: add_time for transaction ${activeTransaction.id}`);
@@ -1011,6 +1019,27 @@ const addTime = async (req, res) => {
             }
         } else {
             console.log(`⏭️ Activity log skipped (offline sync will handle it)`);
+        }
+
+        // Create payment record for incremental cost (if not using member deposit)
+        // Member deposit sudah dideduct di atas, jadi hanya catat pembayaran untuk non-member atau member yang tidak pakai deposit
+        if (incrementalCost > 0 && activeShift && !(activeTransaction.memberId && useDeposit)) {
+            try {
+                const paymentMethodToUse = paymentMethod || 'CASH';
+                await createPaymentRecord(
+                    activeShift.id,
+                    req.user.id,
+                    activeTransaction.id,
+                    incrementalCost,
+                    'RENTAL',
+                    paymentMethodToUse,
+                    `Tambah waktu ${additionalTime} menit - Device: ${device.name}`
+                );
+                console.log(`💰 Payment record created: ${incrementalCost} via ${paymentMethodToUse}`);
+            } catch (paymentError) {
+                console.error('⚠️ Failed to create payment record:', paymentError.message);
+                // Jangan gagalkan request jika payment record gagal
+            }
         }
 
         console.log(`✅ ADD TIME completed successfully`);
