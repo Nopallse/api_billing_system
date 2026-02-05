@@ -15,7 +15,7 @@ const {
   logTransactionEnd,
   getTransactionActivities,
   getTransactionSummary,
-    logBleDisconnect,
+  logBleDisconnect,
 } = require("../utils/transactionActivityLogger");
 
 // Register disconnect callback untuk semua device - DISABLED (WebSocket removed)
@@ -320,7 +320,7 @@ const getAllTransactions = async (req, res) => {
 
     // Konfigurasi where clause
     const whereClause = {};
-    
+
     // Filter by active shift if requested
     if (activeShiftOnly === 'true') {
       const activeShift = await getAnyActiveShift();
@@ -330,11 +330,11 @@ const getAllTransactions = async (req, res) => {
           where: { shiftId: activeShift.id },
           attributes: ['transactionId']
         });
-        
+
         const transactionIds = shiftPayments
           .map(p => p.transactionId)
           .filter(id => id !== null);
-        
+
         if (transactionIds.length > 0) {
           whereClause.id = {
             [Op.in]: transactionIds
@@ -694,13 +694,21 @@ const finishRegularTransaction = async (req, res) => {
       "Finishing regular transaction with request body:>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>",
       req.body
     );
-    const { deviceId } = req.body;
+    const { deviceId, paymentMethod } = req.body;
     const userId = req.user.id;
 
     // Validasi input
     if (!deviceId) {
       return res.status(400).json({
         message: "Device ID wajib diisi",
+      });
+    }
+
+    // Validasi shift aktif (PENTING: Pembayaran harus masuk ke shift aktif)
+    const activeShift = await getAnyActiveShift();
+    if (!activeShift) {
+      return res.status(400).json({
+        message: 'Tidak ada shift aktif. Harap mulai shift terlebih dahulu untuk menerima pembayaran.'
       });
     }
 
@@ -794,6 +802,34 @@ const finishRegularTransaction = async (req, res) => {
       status: "completed",
     });
 
+    // Buat payment record untuk shift aktif (bayar di akhir)
+    // activeShift sudah divalidasi di awal fungsi
+    if (activeShift) {
+      // Payment untuk rental
+      await createPaymentRecord({
+        shiftId: activeShift.id,
+        userId: userId,
+        transactionId: updatedTransaction.id,
+        amount: durationCost, // Hanya biaya rental
+        type: 'RENTAL',
+        paymentMethod: req.body.paymentMethod || 'CASH',
+        note: `Bayar di akhir - Device: ${device.name}`
+      });
+
+      // Payment untuk produk (jika ada)
+      if (productsTotal > 0) {
+        await createPaymentRecord({
+          shiftId: activeShift.id,
+          userId: userId,
+          transactionId: updatedTransaction.id,
+          amount: productsTotal,
+          type: 'FNB',
+          paymentMethod: req.body.paymentMethod || 'CASH',
+          note: `Produk F&B - ${transactionProducts.length} item`
+        });
+      }
+    }
+
     console.log("Transaction updated successfully:", {
       id: updatedTransaction.id,
       end: updatedTransaction.end,
@@ -823,34 +859,6 @@ const finishRegularTransaction = async (req, res) => {
       cost: totalCost,
       endReason: "user_finish",
     });
-
-    // Buat payment record untuk shift aktif (bayar di akhir)
-    const activeShift = await getAnyActiveShift();
-    if (activeShift) {
-      // Payment untuk rental
-      await createPaymentRecord({
-        shiftId: activeShift.id,
-        userId: userId,
-        transactionId: updatedTransaction.id,
-        amount: durationCost, // Hanya biaya rental
-        type: 'RENTAL',
-        paymentMethod: req.body.paymentMethod || 'CASH',
-        note: `Bayar di akhir - Device: ${device.name}`
-      });
-
-      // Payment untuk produk (jika ada)
-      if (productsTotal > 0) {
-        await createPaymentRecord({
-          shiftId: activeShift.id,
-          userId: userId,
-          transactionId: updatedTransaction.id,
-          amount: productsTotal,
-          type: 'FNB',
-          paymentMethod: req.body.paymentMethod || 'CASH',
-          note: `Produk F&B - ${transactionProducts.length} item`
-        });
-      }
-    }
 
     // Notify mobile clients
     notifyMobileClients("device_status_changed", {
@@ -931,10 +939,10 @@ const getTransactionSummaryByDate = async (req, res) => {
       // Parse YYYY-MM-DD and create Date object in local timezone
       const [startYear, startMonth, startDay] = start_date.split('-').map(Number);
       const [endYear, endMonth, endDay] = end_date.split('-').map(Number);
-      
+
       const startOfDay = new Date(startYear, startMonth - 1, startDay, 0, 0, 0, 0);
       const endOfDay = new Date(endYear, endMonth - 1, endDay, 23, 59, 59, 999);
-      
+
       whereClause.start = {
         [Op.between]: [startOfDay, endOfDay]
       };
@@ -996,10 +1004,10 @@ const getTransactionSummaryByDate = async (req, res) => {
 
       // Calculate rental cost (device)
       // If transaction has products, rental cost = total cost - products total
-      const productsTotal = txData.transactionProducts 
+      const productsTotal = txData.transactionProducts
         ? txData.transactionProducts.reduce((sum, tp) => sum + (tp.subtotal || 0), 0)
         : 0;
-      
+
       const rentalCost = (txData.cost || 0) - productsTotal;
 
       dateSummary.pendapatanDevice += rentalCost > 0 ? rentalCost : 0;
@@ -1008,7 +1016,7 @@ const getTransactionSummaryByDate = async (req, res) => {
     });
 
     // Convert map to array and sort by date descending
-    const allDates = Array.from(dateMap.values()).sort((a, b) => 
+    const allDates = Array.from(dateMap.values()).sort((a, b) =>
       new Date(b.date).getTime() - new Date(a.date).getTime()
     );
 
@@ -1116,11 +1124,11 @@ const getTransactionsByDate = async (req, res) => {
 
     allTransactionsForDate.forEach(tx => {
       const txData = tx.toJSON();
-      
-      const productsTotal = txData.transactionProducts 
+
+      const productsTotal = txData.transactionProducts
         ? txData.transactionProducts.reduce((sum, tp) => sum + (tp.subtotal || 0), 0)
         : 0;
-      
+
       const rentalCost = (txData.cost || 0) - productsTotal;
 
       totalDevice += rentalCost > 0 ? rentalCost : 0;
@@ -1131,11 +1139,11 @@ const getTransactionsByDate = async (req, res) => {
     // Map paginated transactions with rental/products breakdown
     const transactionsWithDetails = transactions.map(tx => {
       const txData = tx.toJSON();
-      
-      const productsTotal = txData.transactionProducts 
+
+      const productsTotal = txData.transactionProducts
         ? txData.transactionProducts.reduce((sum, tp) => sum + (tp.subtotal || 0), 0)
         : 0;
-      
+
       const rentalCost = (txData.cost || 0) - productsTotal;
 
       return {

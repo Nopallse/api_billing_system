@@ -1,7 +1,8 @@
-const {User}= require('../models')
+const { User } = require('../models')
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
 const { v4: uuidv4 } = require('uuid');
+const { Op } = require('sequelize');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'your-refresh-secret-key';
@@ -10,15 +11,23 @@ const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'your-refresh-secre
 const login = async (req, res) => {
     try {
         const { email, password } = req.body;
-        
-        if (!email || !password) {
-            return res.status(400).json({ message: 'Email dan password harus diisi' });
-        }
-        
 
-        const user = await User.findOne({ where: { email } });
+        if ((!email) || !password) {
+            return res.status(400).json({ message: 'Email/Username dan password harus diisi' });
+        }
+
+        // Cek login via email atau username
+        const user = await User.findOne({
+            where: {
+                [Op.or]: [
+                    { email: email },
+                    { username: email } // Frontend mengirim username/email di field "email"
+                ]
+            }
+        });
+
         if (!user) {
-            return res.status(401).json({ message: 'Email atau password salah' });
+            return res.status(401).json({ message: 'Email/Username atau password salah' });
         }
 
         const isActive = user.isActive;
@@ -33,17 +42,17 @@ const login = async (req, res) => {
 
         // Generate tokens
         const accessToken = jwt.sign(
-            { 
-                id: user.id, 
+            {
+                id: user.id,
                 email: user.email,
                 type: user.type // Tambahkan type user ke token
-            }, 
-            JWT_SECRET, 
+            },
+            JWT_SECRET,
             { expiresIn: '7d' }
         );
 
         const refreshToken = jwt.sign(
-            { 
+            {
                 id: user.id,
                 type: user.type
             },
@@ -81,7 +90,7 @@ const login = async (req, res) => {
 const refreshToken = async (req, res) => {
     try {
         const { refreshToken } = req.body;
-        
+
         if (!refreshToken) {
             return res.status(400).json({ message: 'Refresh token harus disediakan' });
         }
@@ -94,15 +103,15 @@ const refreshToken = async (req, res) => {
 
         // Verify refresh token
         const decoded = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
-        
+
         // Generate new access token only
         const accessToken = jwt.sign(
-            { 
-                id: user.id, 
+            {
+                id: user.id,
                 email: user.email,
                 type: user.type
-            }, 
-            JWT_SECRET, 
+            },
+            JWT_SECRET,
             { expiresIn: '1h' }
         );
 
