@@ -247,6 +247,45 @@ const getShiftReport = async (req, res) => {
 
         summary.transactionCount = uniqueTransactions.size;
 
+        // Cari transaksi yang "Outstanding" (Belum selesai saat shift berakhir)
+        // Kriteria: start time ada di range shift, tapi end time > shift.endTime atau masih active
+        let outstandingTransactions = [];
+
+        // Find transactions started in this shift
+        const shiftTransactions = await Transaction.findAll({
+            where: {
+                start: {
+                    [Op.gte]: shift.startTime,
+                    ...(shift.endTime ? { [Op.lte]: shift.endTime } : {})
+                }
+            },
+            include: [{
+                model: Device,
+                attributes: ['name']
+            }]
+        });
+
+        const shiftEndTimeValue = shift.endTime ? new Date(shift.endTime).getTime() : Date.now();
+
+        outstandingTransactions = shiftTransactions.filter(t => {
+            // Jika status active, pasti outstanding
+            if (t.status === 'active') return true;
+
+            // Jika completed, cek apakah selesainya seteleh shift berakhir
+            if (t.end) {
+                const transactionEndTime = new Date(t.end).getTime();
+                return transactionEndTime > shiftEndTimeValue;
+            }
+            return false;
+        }).map(t => ({
+            id: t.id,
+            device: t.Device?.name || 'Unknown',
+            start: t.start,
+            duration: t.duration, // current/logged duration
+            status: t.status,
+            estimatedCost: t.cost // cost so far if calculated
+        }));
+
         return res.status(200).json({
             message: 'Success',
             data: {
@@ -261,6 +300,7 @@ const getShiftReport = async (req, res) => {
                     status: shift.status
                 },
                 summary: summary,
+                outstandingTransactions: outstandingTransactions,
                 payments: shift.payments
             }
         });
@@ -286,7 +326,7 @@ const getShiftHistory = async (req, res) => {
             startOfDay.setHours(0, 0, 0, 0);
             const endOfDay = new Date(date);
             endOfDay.setHours(23, 59, 59, 999);
-            
+
             whereClause.startTime = {
                 [Op.between]: [startOfDay, endOfDay]
             };
@@ -322,7 +362,7 @@ const getShiftHistory = async (req, res) => {
         // Calculate summary for each shift
         const shiftsWithSummary = shifts.map(shift => {
             const shiftData = shift.toJSON();
-            
+
             // Aggregate payments
             let pendapatanDevice = 0;
             let pendapatanCafe = 0;
@@ -332,13 +372,13 @@ const getShiftHistory = async (req, res) => {
             if (shiftData.payments && Array.isArray(shiftData.payments)) {
                 shiftData.payments.forEach(payment => {
                     totalPendapatan += payment.amount || 0;
-                    
+
                     if (payment.type === 'RENTAL') {
                         pendapatanDevice += payment.amount || 0;
                     } else if (payment.type === 'FNB') {
                         pendapatanCafe += payment.amount || 0;
                     }
-                    
+
                     if (payment.transactionId) {
                         transactionIds.add(payment.transactionId);
                     }
@@ -466,19 +506,19 @@ const getShiftTransactions = async (req, res) => {
         // Map transactions dengan payment info dan calculate products total
         const transactionsWithDetails = transactions.map(transaction => {
             const transactionData = transaction.toJSON();
-            
+
             // Get payments for this transaction
             const transactionPayments = payments.filter(p => p.transactionId === transaction.id);
-            
+
             // Calculate products total
             let productsTotal = 0;
             if (transactionData.transactionProducts && Array.isArray(transactionData.transactionProducts)) {
                 productsTotal = transactionData.transactionProducts.reduce((sum, tp) => sum + (tp.subtotal || 0), 0);
             }
-            
+
             // Calculate rental cost (total cost - products cost)
             const rentalCost = (transactionData.cost || 0) - productsTotal;
-            
+
             return {
                 ...transactionData,
                 productsTotal,
@@ -600,7 +640,7 @@ const getIncomeSummaryByDate = async (req, res) => {
             if (shiftData.payments && Array.isArray(shiftData.payments)) {
                 shiftData.payments.forEach(payment => {
                     dateSummary.totalPendapatan += payment.amount || 0;
-                    
+
                     if (payment.type === 'RENTAL') {
                         dateSummary.pendapatanDevice += payment.amount || 0;
                     } else if (payment.type === 'FNB') {
@@ -611,7 +651,7 @@ const getIncomeSummaryByDate = async (req, res) => {
         });
 
         // Convert map to array and sort by date descending
-        const allDates = Array.from(dateMap.values()).sort((a, b) => 
+        const allDates = Array.from(dateMap.values()).sort((a, b) =>
             new Date(b.date).getTime() - new Date(a.date).getTime()
         );
 
